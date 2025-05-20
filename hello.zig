@@ -119,12 +119,74 @@ const MPQHashEntry = extern struct {
     }
 };
 
+/// MPQ Block Table Entry structure
+const MPQBlockEntry = extern struct {
+    // File position in the archive
+    file_position: u32,
+    // Compressed file size
+    compressed_size: u32,
+    // Uncompressed file size
+    file_size: u32,
+    // File flags
+    flags: u32,
+
+    // Block entry flag constants
+    pub const FLAG_FILE_IMPLODE: u32 = 0x00000100;
+    pub const FLAG_FILE_COMPRESSED: u32 = 0x00000200;
+    pub const FLAG_FILE_ENCRYPTED: u32 = 0x00010000;
+    pub const FLAG_FILE_EXISTS: u32 = 0x80000000;
+    pub const FLAG_COMPRESSION_MASK: u32 = 0x0000FF00;
+
+    pub fn isCompressed(self: MPQBlockEntry) bool {
+        return (self.flags & FLAG_FILE_COMPRESSED) != 0;
+    }
+
+    pub fn isEncrypted(self: MPQBlockEntry) bool {
+        return (self.flags & FLAG_FILE_ENCRYPTED) != 0;
+    }
+
+    pub fn exists(self: MPQBlockEntry) bool {
+        return (self.flags & FLAG_FILE_EXISTS) != 0;
+    }
+
+    pub fn compressionType(self: MPQBlockEntry) u32 {
+        return self.flags & FLAG_COMPRESSION_MASK;
+    }
+
+    pub fn format(
+        self: MPQBlockEntry,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        try writer.print("Block Entry:\n", .{});
+        try writer.print("  File Position: 0x{X}\n", .{self.file_position});
+        try writer.print("  Compressed Size: {} bytes\n", .{self.compressed_size});
+        try writer.print("  File Size: {} bytes\n", .{self.file_size});
+        try writer.print("  Flags: 0x{X}\n", .{self.flags});
+        try writer.print("  - Exists: {}\n", .{self.exists()});
+        try writer.print("  - Compressed: {}\n", .{self.isCompressed()});
+        try writer.print("  - Encrypted: {}\n", .{self.isEncrypted()});
+        if (self.isCompressed()) {
+            try writer.print("  - Compression Type: 0x{X}\n", .{self.compressionType()});
+        }
+    }
+};
+
 /// Error types for MPQ operations
 const MPQError = error{
     InvalidMPQFile,
     ReadError,
     SeekError,
     InvalidHashTable,
+    InvalidBlockTable,
+    InvalidFileEntry,
+    DecompressionError,
+    DecryptionError,
+    FileNotFound,
     OutOfMemory,
 };
 
@@ -210,15 +272,232 @@ pub fn readHashTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.Al
         return MPQError.ReadError;
     }
 
-    // // Decrypt the hash table
-    // // MPQ uses a specific key for the hash table: "(hash table)"
-    // const HASH_TABLE_KEY: u32 = 0xC3AF5B79; // Precomputed hash for "(hash table)"
+    // Decrypt the hash table
+    // MPQ uses a specific key for the hash table: "(hash table)"
+    const HASH_TABLE_KEY: u32 = 0xC3AF5B79; // Precomputed hash for "(hash table)"
 
-    // // Cast to u32 array for decryption
-    // const data_u32 = std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(hash_entries));
-    // decryptMPQTable(data_u32, HASH_TABLE_KEY);
+    // Cast to u32 array for decryption
+    const data_u32 = std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(hash_entries));
+    decryptMPQTable(data_u32, HASH_TABLE_KEY);
 
     return hash_entries;
+}
+
+/// Read and decrypt the MPQ block table
+pub fn readBlockTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.Allocator) ![]MPQBlockEntry {
+    const table_size = header.block_table_entries * @sizeOf(MPQBlockEntry);
+
+    // Allocate memory for the block table
+    const block_entries = try allocator.alloc(MPQBlockEntry, header.block_table_entries);
+    errdefer allocator.free(block_entries);
+
+    // Seek to the block table position
+    try file.seekTo(header.block_table_offset);
+
+    // Read the encrypted block table
+    const bytes_read = try file.read(std.mem.sliceAsBytes(block_entries));
+    if (bytes_read < table_size) {
+        return MPQError.ReadError;
+    }
+
+    // Decrypt the block table
+    // MPQ uses a specific key for the block table: "(block table)"
+    const BLOCK_TABLE_KEY: u32 = 0xEC83B3A3; // Precomputed hash for "(block table)"
+
+    // Cast to u32 array for decryption
+    const data_u32 = std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(block_entries));
+    decryptMPQTable(data_u32, BLOCK_TABLE_KEY);
+
+    return block_entries;
+}
+
+/// Find a file in the hash table by name
+pub fn findFile(hash_table: []const MPQHashEntry, filename: []const u8) ?u32 {
+    // Calculate hash values for the filename
+    const hashes = hashFilename(filename);
+
+    // Compute the hash table index (using hash A modulo table size)
+    var index = hashes.hash_a % @as(u32, @truncate(hash_table.len));
+    const start_index = index;
+
+    // Linear probing to find the right entry
+    while (true) {
+        const entry = hash_table[index];
+
+        // Check if this is our file
+        if (entry.isValid() and entry.name_hash_a == hashes.hash_a and entry.name_hash_b == hashes.hash_b) {
+            return entry.block_index;
+        }
+
+        // If we hit an empty entry, the file doesn't exist
+        if (entry.isEmpty()) {
+            return null;
+        }
+
+        // Move to the next entry
+        index = (index + 1) % @as(u32, @truncate(hash_table.len));
+
+        // If we've checked the entire table, exit
+        if (index == start_index) {
+            return null;
+        }
+    }
+
+    return null;
+}
+
+/// Generate decryption key for a file
+fn generateFileKey(filename: []const u8, file_offset: u32, file_size: u32) u32 {
+    var key = hashString(filename, 0x300);
+    key = (key + file_offset) ^ file_size;
+    return key;
+}
+
+/// Decrypt a block of data
+fn decryptBlock(data: []u8, key: u32) void {
+    // Convert to u32 slice for easier processing
+    const data_u32 = std.mem.bytesAsSlice(u32, data[0 .. @divFloor(data.len, 4) * 4]);
+    var seed = key;
+
+    for (data_u32) |*value| {
+        seed = (seed * 0x343FD) + 0x269EC3;
+        value.* ^= seed;
+    }
+}
+
+/// Decompress a sector
+fn decompressSector(compressed: []const u8, decompressed: []u8, compression_type: u32) !usize {
+    // This is a simplified implementation - in a real parser, you'd implement
+    // various decompression algorithms based on the compression_type
+
+    // For demonstration, we'll just copy the data (as if uncompressed)
+    if (compression_type == 0) { // No compression
+        std.mem.copy(u8, decompressed, compressed);
+        return compressed.len;
+    }
+
+    // In a real implementation, you'd handle different compression types:
+    // - PKWARE implode
+    // - zlib/deflate
+    // - bzip2
+    // - etc.
+
+    // For now, we'll just report an error
+    return MPQError.DecompressionError;
+}
+
+/// Extract a file from the MPQ archive
+pub fn extractFile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQHashEntry, block_table: []const MPQBlockEntry, filename: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    // Find the file in the hash table
+    const block_index = findFile(hash_table, filename) orelse {
+        return MPQError.FileNotFound;
+    };
+
+    // Get the block entry
+    if (block_index >= block_table.len) {
+        return MPQError.InvalidFileEntry;
+    }
+
+    const block_entry = block_table[block_index];
+
+    // Check if the file exists
+    if (!block_entry.exists()) {
+        return MPQError.FileNotFound;
+    }
+
+    // Allocate memory for the file
+    const file_data = try allocator.alloc(u8, block_entry.file_size);
+    errdefer allocator.free(file_data);
+
+    // If the file isn't compressed or encrypted, just read it directly
+    if (!block_entry.isCompressed() and !block_entry.isEncrypted()) {
+        try file.seekTo(block_entry.file_position);
+        const bytes_read = try file.read(file_data);
+        if (bytes_read != block_entry.file_size) {
+            return MPQError.ReadError;
+        }
+        return file_data;
+    }
+
+    // For compressed/encrypted files, we need to read the sector table first
+    const sector_size = header.sectorSize();
+    const sectors = @divFloor(block_entry.file_size + sector_size - 1, sector_size);
+    const sector_table_size = (sectors + 1) * 4; // +1 for the end marker
+
+    // Read the sector offset table
+    const sector_offsets = try allocator.alloc(u32, sectors + 1);
+    defer allocator.free(sector_offsets);
+
+    try file.seekTo(block_entry.file_position);
+
+    // Read and potentially decrypt the sector offset table
+    {
+        const sector_table_buf = try allocator.alloc(u8, sector_table_size);
+        defer allocator.free(sector_table_buf);
+
+        const bytes_read = try file.read(sector_table_buf);
+        if (bytes_read != sector_table_size) {
+            return MPQError.ReadError;
+        }
+
+        // If the file is encrypted, decrypt the sector table
+        if (block_entry.isEncrypted()) {
+            const key = generateFileKey(filename, block_entry.file_position, block_entry.file_size);
+            decryptBlock(sector_table_buf, key);
+        }
+
+        // Convert to u32 array
+        const offsets_slice = std.mem.bytesAsSlice(u32, sector_table_buf);
+        std.mem.copy(u32, sector_offsets, offsets_slice);
+    }
+
+    // Process each sector
+    var bytes_extracted: usize = 0;
+    var buffer = try allocator.alloc(u8, sector_size);
+    defer allocator.free(buffer);
+
+    for (0..sectors) |i| {
+        const sector_offset = block_entry.file_position + sector_offsets[i];
+        const next_offset = block_entry.file_position + sector_offsets[i + 1];
+        const sector_compressed_size = next_offset - sector_offset;
+
+        // Read the compressed sector
+        try file.seekTo(sector_offset);
+        var compressed_sector = try allocator.alloc(u8, sector_compressed_size);
+        defer allocator.free(compressed_sector);
+
+        const bytes_read = try file.read(compressed_sector);
+        if (bytes_read != sector_compressed_size) {
+            return MPQError.ReadError;
+        }
+
+        // If encrypted, decrypt the sector
+        if (block_entry.isEncrypted()) {
+            const key = generateFileKey(filename, sector_offset, block_entry.file_size);
+            decryptBlock(compressed_sector, key);
+        }
+
+        // Calculate actual decompressed size for this sector
+        const decompressed_size = @min(sector_size, block_entry.file_size - bytes_extracted);
+
+        // Decompress the sector
+        if (block_entry.isCompressed()) {
+            _ = try decompressSector(compressed_sector, buffer[0..decompressed_size], block_entry.compressionType());
+        } else {
+            std.mem.copy(u8, buffer[0..decompressed_size], compressed_sector[0..decompressed_size]);
+        }
+
+        // Copy to output buffer
+        std.mem.copy(u8, file_data[bytes_extracted..], buffer[0..decompressed_size]);
+        bytes_extracted += decompressed_size;
+
+        // If we've extracted all the file data, we're done
+        if (bytes_extracted >= block_entry.file_size) {
+            break;
+        }
+    }
+
+    return file_data;
 }
 
 // MPQ crypto table (normally this would be generated, but for brevity we'll use a placeholder)
@@ -250,9 +529,10 @@ pub fn main() !void {
 
     // Get MPQ file path
     const mpq_path = args.next() orelse {
-        std.debug.print("Usage: {s} <mpq_file_path>\n", .{std.os.argv[0]});
+        std.debug.print("Usage: {s} <mpq_file_path> [extract_filename]\n", .{std.os.argv[0]});
         return error.InvalidArgs;
     };
+
     // Open MPQ file
     const file = std.fs.cwd().openFile(mpq_path, .{}) catch |err| {
         std.debug.print("Failed to open MPQ file: {}\n", .{err});
@@ -270,7 +550,7 @@ pub fn main() !void {
     };
 
     // Print header information
-    std.debug.print("{s}\n", .{header});
+    std.debug.print("{}\n", .{header});
 
     // Read hash table
     const hash_table = readHashTable(file, header, allocator) catch |err| {
@@ -279,13 +559,51 @@ pub fn main() !void {
     };
     defer allocator.free(hash_table);
 
+    // Read block table
+    const block_table = readBlockTable(file, header, allocator) catch |err| {
+        std.debug.print("Failed to read block table: {}\n", .{err});
+        return err;
+    };
+    defer allocator.free(block_table);
+
     // Print hash table entries
     const stdout = std.io.getStdOut().writer();
     std.debug.print("\nHash Table Entries:\n", .{});
     for (hash_table, 0..) |entry, i| {
         if (entry.isValid()) {
-            try stdout.print("Entry {d}: {s}\n", .{ i, entry });
+            try stdout.print("Entry {d}: {}\n", .{ i, entry });
         }
+    }
+
+    // Print block table entries
+    std.debug.print("\nBlock Table Entries:\n", .{});
+    for (block_table, 0..) |entry, i| {
+        if (entry.exists()) {
+            try stdout.print("Entry {d}: {}\n", .{ i, entry });
+        }
+    }
+
+    // Check if a file was specified for extraction
+    const extract_filename = args.next();
+    if (extract_filename) |filename| {
+        std.debug.print("\nExtracting file: {s}\n", .{filename});
+
+        // Find the file
+        const file_data = extractFile(file, header, hash_table, block_table, filename, allocator) catch |err| {
+            std.debug.print("Failed to extract file: {}\n", .{err});
+            return err;
+        };
+        defer allocator.free(file_data);
+
+        // Write the file to disk
+        const output_path = try std.fmt.allocPrint(allocator, "{s}.extracted", .{filename});
+        defer allocator.free(output_path);
+
+        const output_file = try std.fs.cwd().createFile(output_path, .{});
+        defer output_file.close();
+
+        _ = try output_file.write(file_data);
+        std.debug.print("File extracted to: {s} ({} bytes)\n", .{ output_path, file_data.len });
     }
 
     return;
