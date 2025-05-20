@@ -514,6 +514,76 @@ fn initCryptoTable() !void {
     // For brevity, we're skipping the actual table generation
 }
 
+/// Extract and parse the (listfile) to get a list of all files in the archive
+pub fn extractListfile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQHashEntry, block_table: []const MPQBlockEntry, allocator: std.mem.Allocator) ![][]u8 {
+    // Try to extract the (listfile)
+    const listfile_data = extractFile(file, header, hash_table, block_table, "(listfile)", allocator) catch |err| {
+        std.debug.print("Failed to extract (listfile): {}\n", .{err});
+        return err;
+    };
+    defer allocator.free(listfile_data);
+
+    // Count the number of lines (files)
+    var num_files: usize = 0;
+    var last_was_newline = true;
+
+    for (listfile_data) |c| {
+        if (c == '\n') {
+            last_was_newline = true;
+        } else if (last_was_newline) {
+            num_files += 1;
+            last_was_newline = false;
+        }
+    }
+
+    // Allocate array for filenames
+    var filenames = try allocator.alloc([]u8, num_files);
+    errdefer {
+        for (filenames) |fname| {
+            allocator.free(fname);
+        }
+        allocator.free(filenames);
+    }
+
+    // Parse the listfile content
+    var file_index: usize = 0;
+    var line_start: usize = 0;
+    var i: usize = 0;
+
+    while (i <= listfile_data.len) {
+        const is_end = i == listfile_data.len;
+        const is_newline = !is_end and listfile_data[i] == '\n';
+
+        if (is_end or is_newline) {
+            // Skip empty lines
+            if (i > line_start) {
+                // Extract line without trailing carriage return if present
+                var line_end = i;
+                if (line_end > line_start and listfile_data[line_end - 1] == '\r') {
+                    line_end -= 1;
+                }
+
+                // Copy the filename
+                const filename = try allocator.alloc(u8, line_end - line_start);
+                std.mem.copy(u8, filename, listfile_data[line_start..line_end]);
+                filenames[file_index] = filename;
+                file_index += 1;
+            }
+
+            line_start = i + 1;
+        }
+
+        i += 1;
+    }
+
+    // Resize the array in case we had empty lines
+    if (file_index < num_files) {
+        filenames = allocator.realloc(filenames, file_index) catch filenames[0..file_index];
+    }
+
+    return filenames;
+}
+
 pub fn main() !void {
     // Get allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -529,7 +599,7 @@ pub fn main() !void {
 
     // Get MPQ file path
     const mpq_path = args.next() orelse {
-        std.debug.print("Usage: {s} <mpq_file_path> [extract_filename]\n", .{std.os.argv[0]});
+        std.debug.print("Usage: {s} <mpq_file_path> [extract_filename | list | extract-all]\n", .{std.os.argv[0]});
         return error.InvalidArgs;
     };
 
@@ -583,27 +653,119 @@ pub fn main() !void {
         }
     }
 
-    // Check if a file was specified for extraction
-    const extract_filename = args.next();
-    if (extract_filename) |filename| {
-        std.debug.print("\nExtracting file: {s}\n", .{filename});
+    // Check command or filename for extraction
+    const command = args.next();
+    if (command) |cmd| {
+        if (std.mem.eql(u8, cmd, "list")) {
+            // Extract and display the list of files
+            std.debug.print("\nExtracting listfile...\n", .{});
+            const filenames = extractListfile(file, header, hash_table, block_table, allocator) catch |err| {
+                std.debug.print("Failed to extract listfile: {}\n", .{err});
+                return;
+            };
+            defer {
+                for (filenames) |fname| {
+                    allocator.free(fname);
+                }
+                allocator.free(filenames);
+            }
 
-        // Find the file
-        const file_data = extractFile(file, header, hash_table, block_table, filename, allocator) catch |err| {
-            std.debug.print("Failed to extract file: {}\n", .{err});
-            return err;
-        };
-        defer allocator.free(file_data);
+            std.debug.print("\nFiles in archive ({} files):\n", .{filenames.len});
+            for (filenames, 0..) |filename, i| {
+                try stdout.print("{d}: {s}\n", .{ i + 1, filename });
+            }
+        } else if (std.mem.eql(u8, cmd, "extract-all")) {
+            // Extract all files in the archive
+            std.debug.print("\nExtracting all files...\n", .{});
 
-        // Write the file to disk
-        const output_path = try std.fmt.allocPrint(allocator, "{s}.extracted", .{filename});
-        defer allocator.free(output_path);
+            // First get the list of files
+            const filenames = extractListfile(file, header, hash_table, block_table, allocator) catch |err| {
+                std.debug.print("Failed to extract listfile: {}\n", .{err});
+                return;
+            };
+            defer {
+                for (filenames) |fname| {
+                    allocator.free(fname);
+                }
+                allocator.free(filenames);
+            }
 
-        const output_file = try std.fs.cwd().createFile(output_path, .{});
-        defer output_file.close();
+            // Create output directory
+            const output_dir = try std.fmt.allocPrint(allocator, "{s}_extracted", .{std.fs.path.basename(mpq_path)});
+            defer allocator.free(output_dir);
 
-        _ = try output_file.write(file_data);
-        std.debug.print("File extracted to: {s} ({} bytes)\n", .{ output_path, file_data.len });
+            std.fs.cwd().makeDir(output_dir) catch |err| {
+                if (err != error.PathAlreadyExists) {
+                    std.debug.print("Failed to create output directory: {}\n", .{err});
+                    return err;
+                }
+            };
+
+            // Extract each file
+            var success_count: usize = 0;
+            for (filenames) |filename| {
+                std.debug.print("Extracting: {s}\n", .{filename});
+
+                const file_data = extractFile(file, header, hash_table, block_table, filename, allocator) catch |err| {
+                    std.debug.print("  Failed: {}\n", .{err});
+                    continue;
+                };
+                defer allocator.free(file_data);
+
+                // Create full path with directories
+                const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ output_dir, filename });
+                defer allocator.free(full_path);
+
+                // Create parent directories if needed
+                if (std.fs.path.dirname(full_path)) |dir_path| {
+                    var iter_path = dir_path;
+                    while (iter_path.len > 0) {
+                        std.fs.cwd().makeDir(iter_path) catch |err| {
+                            if (err != error.PathAlreadyExists) {
+                                // Just log and continue
+                                std.debug.print("  Warning: couldn't create directory {s}: {}\n", .{ iter_path, err });
+                            }
+                        };
+                        iter_path = std.fs.path.dirname(iter_path) orelse break;
+                    }
+                }
+
+                // Write the file
+                const output_file = std.fs.cwd().createFile(full_path, .{}) catch |err| {
+                    std.debug.print("  Failed to create file: {}\n", .{err});
+                    continue;
+                };
+                defer output_file.close();
+
+                output_file.write(file_data) catch |err| {
+                    std.debug.print("  Failed to write file: {}\n", .{err});
+                    continue;
+                };
+
+                success_count += 1;
+            }
+
+            std.debug.print("\nExtraction complete. Successfully extracted {}/{} files to {s}\n", .{ success_count, filenames.len, output_dir });
+        } else {
+            // Extract a specific file
+            std.debug.print("\nExtracting file: {s}\n", .{cmd});
+
+            const file_data = extractFile(file, header, hash_table, block_table, cmd, allocator) catch |err| {
+                std.debug.print("Failed to extract file: {}\n", .{err});
+                return err;
+            };
+            defer allocator.free(file_data);
+
+            // Write the file to disk
+            const output_path = try std.fmt.allocPrint(allocator, "{s}.extracted", .{cmd});
+            defer allocator.free(output_path);
+
+            const output_file = try std.fs.cwd().createFile(output_path, .{});
+            defer output_file.close();
+
+            _ = try output_file.write(file_data);
+            std.debug.print("File extracted to: {s} ({} bytes)\n", .{ output_path, file_data.len });
+        }
     }
 
     return;
