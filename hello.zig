@@ -221,16 +221,17 @@ pub fn readMPQHeader(file: std.fs.File) !MPQHeader {
 pub fn hashString(str: []const u8, hash_type: u32, crypto_table: []const u32) u32 {
     var seed1: u32 = 0x7FED7FED;
     var seed2: u32 = 0xEEEEEEEE;
-
     // Process each character
     for (str) |char| {
         // Convert to uppercase if it's a lowercase letter
         const upChar: u8 = if (char >= 'a' and char <= 'z') char - ('a' - 'A') else char;
-
-        seed1 = crypto_table[(@as(usize, hash_type) << 8) + upChar] ^ (seed1 + seed2);
-        seed2 = upChar + seed1 + seed2 + (seed2 << 5) + 3;
+        // The crypto table has 5 categories with 256 entries each
+        // Each hash_type corresponds to a different category (0-4)
+        // We need to limit the hash_type to the valid range
+        const table_index = (@as(usize, hash_type & 0x03) * 0x100) + upChar;
+        seed1 = crypto_table[table_index] ^ (seed1 +% seed2);
+        seed2 = upChar +% seed1 +% seed2 +% (seed2 << 5) +% 3;
     }
-
     return seed1;
 }
 
@@ -243,15 +244,19 @@ pub fn hashFilename(filename: []const u8, crypto_table: []const u32) struct { ha
 }
 
 /// Decrypt MPQ table data
-pub fn decryptMPQTable(data: []u32, key: u32) void {
-    var seed = key;
+pub fn decryptMPQTable(buffer: []u32, seed: u32) void {
+    var prev: u32 = 0;
+    var seed_val: u32 = seed;
 
-    for (data) |*value| {
-        // Update seed
-        seed = (seed * 0x343FD) + 0x269EC3;
+    // Process each entry in the buffer
+    for (buffer, 0..) |_, i| {
+        // Calculate the next value in the sequence
+        seed_val = (seed_val *% 0x343FD) +% 0x269EC3;
+        const value = seed_val;
 
-        // Decrypt the value
-        value.* ^= seed;
+        // XOR with the previous value
+        buffer[i] ^= prev +% value;
+        prev = buffer[i];
     }
 }
 
