@@ -218,7 +218,7 @@ pub fn readMPQHeader(file: std.fs.File) !MPQHeader {
 }
 
 /// Calculate a hash value for an MPQ key
-fn hashString(str: []const u8, hash_type: u32) u32 {
+pub fn hashString(str: []const u8, hash_type: u32, crypto_table: []const u32) u32 {
     var seed1: u32 = 0x7FED7FED;
     var seed2: u32 = 0xEEEEEEEE;
 
@@ -227,7 +227,7 @@ fn hashString(str: []const u8, hash_type: u32) u32 {
         // Convert to uppercase if it's a lowercase letter
         const upChar: u8 = if (char >= 'a' and char <= 'z') char - ('a' - 'A') else char;
 
-        seed1 = crypto_table[(hash_type * 0x100) + upChar] ^ (seed1 + seed2);
+        seed1 = crypto_table[(@as(usize, hash_type) << 8) + upChar] ^ (seed1 + seed2);
         seed2 = upChar + seed1 + seed2 + (seed2 << 5) + 3;
     }
 
@@ -235,15 +235,15 @@ fn hashString(str: []const u8, hash_type: u32) u32 {
 }
 
 /// Generate hash values for a filename
-fn hashFilename(filename: []const u8) struct { hash_a: u32, hash_b: u32 } {
-    const hash_a = hashString(filename, 0x100);
-    const hash_b = hashString(filename, 0x200);
+pub fn hashFilename(filename: []const u8, crypto_table: []const u32) struct { hash_a: u32, hash_b: u32 } {
+    const hash_a = hashString(filename, 0x100, crypto_table);
+    const hash_b = hashString(filename, 0x200, crypto_table);
 
     return .{ .hash_a = hash_a, .hash_b = hash_b };
 }
 
 /// Decrypt MPQ table data
-fn decryptMPQTable(data: []u32, key: u32) void {
+pub fn decryptMPQTable(data: []u32, key: u32) void {
     var seed = key;
 
     for (data) |*value| {
@@ -256,7 +256,7 @@ fn decryptMPQTable(data: []u32, key: u32) void {
 }
 
 /// Read and decrypt the MPQ hash table
-pub fn readHashTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.Allocator) ![]MPQHashEntry {
+pub fn readHashTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.Allocator, crypto_table: []const u32) ![]MPQHashEntry {
     const table_size = header.hash_table_entries * @sizeOf(MPQHashEntry);
 
     // Allocate memory for the hash table
@@ -274,7 +274,7 @@ pub fn readHashTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.Al
 
     // Decrypt the hash table
     // MPQ uses a specific key for the hash table: "(hash table)"
-    const HASH_TABLE_KEY: u32 = 0xC3AF5B79; // Precomputed hash for "(hash table)"
+    const HASH_TABLE_KEY: u32 = hashString("(hash table)", 0x300, crypto_table);
 
     // Cast to u32 array for decryption
     const data_u32 = std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(hash_entries));
@@ -284,7 +284,7 @@ pub fn readHashTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.Al
 }
 
 /// Read and decrypt the MPQ block table
-pub fn readBlockTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.Allocator) ![]MPQBlockEntry {
+pub fn readBlockTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.Allocator, crypto_table: []const u32) ![]MPQBlockEntry {
     const table_size = header.block_table_entries * @sizeOf(MPQBlockEntry);
 
     // Allocate memory for the block table
@@ -302,7 +302,7 @@ pub fn readBlockTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.A
 
     // Decrypt the block table
     // MPQ uses a specific key for the block table: "(block table)"
-    const BLOCK_TABLE_KEY: u32 = 0xEC83B3A3; // Precomputed hash for "(block table)"
+    const BLOCK_TABLE_KEY: u32 = hashString("(block table)", 0x300, crypto_table);
 
     // Cast to u32 array for decryption
     const data_u32 = std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(block_entries));
@@ -312,9 +312,9 @@ pub fn readBlockTable(file: std.fs.File, header: MPQHeader, allocator: std.mem.A
 }
 
 /// Find a file in the hash table by name
-pub fn findFile(hash_table: []const MPQHashEntry, filename: []const u8) ?u32 {
+pub fn findFile(hash_table: []const MPQHashEntry, filename: []const u8, crypto_table: []const u32) ?u32 {
     // Calculate hash values for the filename
-    const hashes = hashFilename(filename);
+    const hashes = hashFilename(filename, crypto_table);
 
     // Compute the hash table index (using hash A modulo table size)
     var index = hashes.hash_a % @as(u32, @truncate(hash_table.len));
@@ -347,14 +347,14 @@ pub fn findFile(hash_table: []const MPQHashEntry, filename: []const u8) ?u32 {
 }
 
 /// Generate decryption key for a file
-fn generateFileKey(filename: []const u8, file_offset: u32, file_size: u32) u32 {
-    var key = hashString(filename, 0x300);
+pub fn generateFileKey(filename: []const u8, file_offset: u32, file_size: u32, crypto_table: []const u32) u32 {
+    var key = hashString(filename, 0x300, crypto_table);
     key = (key + file_offset) ^ file_size;
     return key;
 }
 
 /// Decrypt a block of data
-fn decryptBlock(data: []u8, key: u32) void {
+pub fn decryptBlock(data: []u8, key: u32) void {
     // Convert to u32 slice for easier processing
     const data_u32 = std.mem.bytesAsSlice(u32, data[0 .. @divFloor(data.len, 4) * 4]);
     var seed = key;
@@ -372,7 +372,7 @@ fn decompressSector(compressed: []const u8, decompressed: []u8, compression_type
 
     // For demonstration, we'll just copy the data (as if uncompressed)
     if (compression_type == 0) { // No compression
-        std.mem.copy(u8, decompressed, compressed);
+        @memcpy(decompressed, compressed);
         return compressed.len;
     }
 
@@ -387,9 +387,9 @@ fn decompressSector(compressed: []const u8, decompressed: []u8, compression_type
 }
 
 /// Extract a file from the MPQ archive
-pub fn extractFile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQHashEntry, block_table: []const MPQBlockEntry, filename: []const u8, allocator: std.mem.Allocator) ![]u8 {
+pub fn extractFile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQHashEntry, block_table: []const MPQBlockEntry, filename: []const u8, allocator: std.mem.Allocator, crypto_table: []const u32) ![]u8 {
     // Find the file in the hash table
-    const block_index = findFile(hash_table, filename) orelse {
+    const block_index = findFile(hash_table, filename, crypto_table) orelse {
         return MPQError.FileNotFound;
     };
 
@@ -442,13 +442,13 @@ pub fn extractFile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQ
 
         // If the file is encrypted, decrypt the sector table
         if (block_entry.isEncrypted()) {
-            const key = generateFileKey(filename, block_entry.file_position, block_entry.file_size);
+            const key = generateFileKey(filename, block_entry.file_position, block_entry.file_size, crypto_table);
             decryptBlock(sector_table_buf, key);
         }
 
         // Convert to u32 array
         const offsets_slice = std.mem.bytesAsSlice(u32, sector_table_buf);
-        std.mem.copy(u32, sector_offsets, offsets_slice);
+        @memcpy(sector_offsets, offsets_slice);
     }
 
     // Process each sector
@@ -473,7 +473,7 @@ pub fn extractFile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQ
 
         // If encrypted, decrypt the sector
         if (block_entry.isEncrypted()) {
-            const key = generateFileKey(filename, sector_offset, block_entry.file_size);
+            const key = generateFileKey(filename, sector_offset, block_entry.file_size, crypto_table);
             decryptBlock(compressed_sector, key);
         }
 
@@ -484,11 +484,11 @@ pub fn extractFile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQ
         if (block_entry.isCompressed()) {
             _ = try decompressSector(compressed_sector, buffer[0..decompressed_size], block_entry.compressionType());
         } else {
-            std.mem.copy(u8, buffer[0..decompressed_size], compressed_sector[0..decompressed_size]);
+            @memcpy(buffer[0..decompressed_size], compressed_sector[0..decompressed_size]);
         }
 
         // Copy to output buffer
-        std.mem.copy(u8, file_data[bytes_extracted..], buffer[0..decompressed_size]);
+        @memcpy(file_data[bytes_extracted..], buffer[0..decompressed_size]);
         bytes_extracted += decompressed_size;
 
         // If we've extracted all the file data, we're done
@@ -500,24 +500,10 @@ pub fn extractFile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQ
     return file_data;
 }
 
-// MPQ crypto table (normally this would be generated, but for brevity we'll use a placeholder)
-// In a real implementation, you would generate this table or include the full table data
-const crypto_table = [_]u32{
-    // This is a placeholder - in a real implementation, this would be a 1024-entry table
-    // Simplified demonstration values
-    0x7FED7FED, 0xEEEEEEEE, // Add more values as needed
-};
-
-// Initialize the crypto table (in real implementation)
-fn initCryptoTable() !void {
-    // In a real implementation, this would initialize the full crypto table
-    // For brevity, we're skipping the actual table generation
-}
-
 /// Extract and parse the (listfile) to get a list of all files in the archive
-pub fn extractListfile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQHashEntry, block_table: []const MPQBlockEntry, allocator: std.mem.Allocator) ![][]u8 {
+pub fn extractListfile(file: std.fs.File, header: MPQHeader, hash_table: []const MPQHashEntry, block_table: []const MPQBlockEntry, allocator: std.mem.Allocator, crypto_table: []const u32) ![][]u8 {
     // Try to extract the (listfile)
-    const listfile_data = extractFile(file, header, hash_table, block_table, "(listfile)", allocator) catch |err| {
+    const listfile_data = extractFile(file, header, hash_table, block_table, "(listfile)", allocator, crypto_table) catch |err| {
         std.debug.print("Failed to extract (listfile): {}\n", .{err});
         return err;
     };
@@ -565,7 +551,7 @@ pub fn extractListfile(file: std.fs.File, header: MPQHeader, hash_table: []const
 
                 // Copy the filename
                 const filename = try allocator.alloc(u8, line_end - line_start);
-                std.mem.copy(u8, filename, listfile_data[line_start..line_end]);
+                @memcpy(filename, listfile_data[line_start..line_end]);
                 filenames[file_index] = filename;
                 file_index += 1;
             }
@@ -582,6 +568,35 @@ pub fn extractListfile(file: std.fs.File, header: MPQHeader, hash_table: []const
     }
 
     return filenames;
+}
+
+/// MPQ cryptography table implementation
+/// The crypto table contains 1280 specially generated values used for hashing and encryption
+
+// Generate the MPQ crypto table
+pub fn initCryptoTable() ![1280]u32 {
+    var crypto_table: [1280]u32 = undefined;
+    var seed: u32 = 0x00100001;
+
+    for (0..256) |index1| {
+        var index2: usize = index1;
+        var i: u32 = 0;
+        var temp1: u32 = 0;
+        var temp2: u32 = 0;
+
+        while (i < 5) : (i += 1) {
+            seed = (seed * 125 + 3) % 0x2AAAAB;
+            temp1 = (seed & 0xFFFF) << 0x10;
+
+            seed = (seed * 125 + 3) % 0x2AAAAB;
+            temp2 = seed & 0xFFFF;
+
+            crypto_table[index2] = temp1 | temp2;
+            index2 += 0x100;
+        }
+    }
+
+    return crypto_table;
 }
 
 pub fn main() !void {
@@ -610,8 +625,9 @@ pub fn main() !void {
     };
     defer file.close();
 
-    // // Initialize crypto table
-    // try initCryptoTable();
+    // Initialize crypto table
+    std.debug.print("Initializing MPQ crypto table...\n", .{});
+    const crypto_table = try initCryptoTable();
 
     // Read MPQ header
     const header = readMPQHeader(file) catch |err| {
@@ -623,14 +639,16 @@ pub fn main() !void {
     std.debug.print("{}\n", .{header});
 
     // Read hash table
-    const hash_table = readHashTable(file, header, allocator) catch |err| {
+    std.debug.print("Reading and decrypting hash table...\n", .{});
+    const hash_table = readHashTable(file, header, allocator, &crypto_table) catch |err| {
         std.debug.print("Failed to read hash table: {}\n", .{err});
         return err;
     };
     defer allocator.free(hash_table);
 
     // Read block table
-    const block_table = readBlockTable(file, header, allocator) catch |err| {
+    std.debug.print("Reading and decrypting block table...\n", .{});
+    const block_table = readBlockTable(file, header, allocator, &crypto_table) catch |err| {
         std.debug.print("Failed to read block table: {}\n", .{err});
         return err;
     };
@@ -659,7 +677,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, cmd, "list")) {
             // Extract and display the list of files
             std.debug.print("\nExtracting listfile...\n", .{});
-            const filenames = extractListfile(file, header, hash_table, block_table, allocator) catch |err| {
+            const filenames = extractListfile(file, header, hash_table, block_table, allocator, &crypto_table) catch |err| {
                 std.debug.print("Failed to extract listfile: {}\n", .{err});
                 return;
             };
@@ -679,7 +697,7 @@ pub fn main() !void {
             std.debug.print("\nExtracting all files...\n", .{});
 
             // First get the list of files
-            const filenames = extractListfile(file, header, hash_table, block_table, allocator) catch |err| {
+            const filenames = extractListfile(file, header, hash_table, block_table, allocator, &crypto_table) catch |err| {
                 std.debug.print("Failed to extract listfile: {}\n", .{err});
                 return;
             };
@@ -706,7 +724,7 @@ pub fn main() !void {
             for (filenames) |filename| {
                 std.debug.print("Extracting: {s}\n", .{filename});
 
-                const file_data = extractFile(file, header, hash_table, block_table, filename, allocator) catch |err| {
+                const file_data = extractFile(file, header, hash_table, block_table, filename, allocator, &crypto_table) catch |err| {
                     std.debug.print("  Failed: {}\n", .{err});
                     continue;
                 };
@@ -737,7 +755,7 @@ pub fn main() !void {
                 };
                 defer output_file.close();
 
-                output_file.write(file_data) catch |err| {
+                _ = output_file.write(file_data) catch |err| {
                     std.debug.print("  Failed to write file: {}\n", .{err});
                     continue;
                 };
@@ -750,7 +768,7 @@ pub fn main() !void {
             // Extract a specific file
             std.debug.print("\nExtracting file: {s}\n", .{cmd});
 
-            const file_data = extractFile(file, header, hash_table, block_table, cmd, allocator) catch |err| {
+            const file_data = extractFile(file, header, hash_table, block_table, cmd, allocator, &crypto_table) catch |err| {
                 std.debug.print("Failed to extract file: {}\n", .{err});
                 return err;
             };
