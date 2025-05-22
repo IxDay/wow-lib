@@ -74,6 +74,38 @@ pub fn hashString(str: []const u8, hash_type: HashType) u32 {
     return seed1;
 }
 
+// pub fn decrypt(data: []const u8, key: u32) []const u8 {
+// pub fn decrypt(_: []const u8, _: u32) []const u8 {
+pub fn decrypt(data: []u8, key: u32) void {
+    var seed1 = key;
+    var seed2: u32 = 0xeeeeeeee;
+    var ch: u32 = undefined;
+    var i: usize = 0;
+
+    while (i < data.len) : (i += 4) {
+        seed2 +%= crypt_table[0x400 + (seed1 & 0xff)];
+        // littleEndian byte order:
+        ch = @as(u32, data[i]) |
+            @as(u32, data[i + 1]) << 8 |
+            @as(u32, data[i + 2]) << 16 |
+            @as(u32, data[i + 3]) << 24;
+        ch ^= seed1 +% seed2;
+        seed1 = ((~seed1 << 0x15) +% 0x11111111) | (seed1 >> 0x0B);
+        seed2 = ch +% seed2 +% (seed2 << 5) +% 3;
+
+        data[i] = @truncate(ch);
+        data[i + 1] = @truncate(ch >> 8);
+        data[i + 2] = @truncate(ch >> 16);
+        data[i + 3] = @truncate(ch >> 24);
+    }
+}
+
+test "decrypt function" {
+    var data = "abcd".*;
+    decrypt(&data, 1);
+    try std.testing.expectEqual(data, [_]u8{ 165, 132, 230, 39 });
+}
+
 // FileNameHash returns different hashes of the file name,
 // exactly the ones that are needed by MPQ.FileByHash().
 pub fn fileNameHash(name: []const u8) struct { hash_a: u32, hash_b: u32, hash_c: u32 } {
@@ -90,6 +122,10 @@ test "hash (filelist) special key is correct" {
     try std.testing.expect(hash.hash_b == 0xFD657910);
     try std.testing.expect(hash.hash_c == 0x4E9B98A7);
 }
+
+const MPQ = struct {
+    pub fn fileByHash() void {}
+};
 
 pub fn main() !void {
     return;
