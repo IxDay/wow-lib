@@ -35,7 +35,8 @@ test "transform lowercase to uppercase and slash to backslash" {
 }
 
 const crypt_table: [0x500]u32 = blk: {
-    const table: [0x500]u32 = undefined;
+    @setEvalBranchQuota(10000);
+    var table: [0x500]u32 = undefined;
     var seed: u32 = 0x00100001;
 
     for (0..0x100) |index1| {
@@ -51,6 +52,44 @@ const crypt_table: [0x500]u32 = blk: {
     }
     break :blk table;
 };
+
+const HashType = enum(u32) {
+    TableOffset = 0 << 8, // 0
+    NameA = 1 << 8, // 256
+    NameB = 2 << 8, // 512
+    FileKey = 3 << 8, // 768
+};
+
+// hashString computes the hash of a string.
+pub fn hashString(str: []const u8, hash_type: HashType) u32 {
+    var seed1: u32 = 0x7fed7fed;
+    var seed2: u32 = 0xeeeeeeee;
+
+    for (str) |c| {
+        const ch = asciiToUpperTable[c];
+        seed1 = crypt_table[@intFromEnum(hash_type) + ch] ^ (seed1 +% seed2);
+        seed2 = ch +% seed1 +% seed2 +% (seed2 << 5) +% 3;
+    }
+
+    return seed1;
+}
+
+// FileNameHash returns different hashes of the file name,
+// exactly the ones that are needed by MPQ.FileByHash().
+pub fn fileNameHash(name: []const u8) struct { hash_a: u32, hash_b: u32, hash_c: u32 } {
+    return .{
+        .hash_a = hashString(name, HashType.TableOffset),
+        .hash_b = hashString(name, HashType.NameA),
+        .hash_c = hashString(name, HashType.NameB),
+    };
+}
+
+test "hash (filelist) special key is correct" {
+    const hash = fileNameHash("(listfile)");
+    try std.testing.expect(hash.hash_a == 0x5F3DE859);
+    try std.testing.expect(hash.hash_b == 0xFD657910);
+    try std.testing.expect(hash.hash_c == 0x4E9B98A7);
+}
 
 pub fn main() !void {
     return;
