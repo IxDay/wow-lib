@@ -34,6 +34,26 @@ test "transform lowercase to uppercase and slash to backslash" {
     }
 }
 
+const crypt_table: [0x500]u32 = (struct {
+    fn call() [0x500]u32 {
+        const table: [0x500]u32 = undefined;
+        var seed: u32 = 0x00100001;
+
+        for (0..0x100) |index1| {
+            var index2 = index1;
+            for (0..5) |_| {
+                seed = (seed * 125 + 3) % 0x2AAAAB;
+                const temp: u32 = (seed & 0xFFFF) << 0x10;
+                seed = (seed * 125 + 3) % 0x2AAAAB;
+
+                table[index2] = temp | (seed & 0xffff);
+                index2 += 0x100;
+            }
+        }
+        return table;
+    }
+}.call)();
+
 pub fn main() !void {
     return;
 }
