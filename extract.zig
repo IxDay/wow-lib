@@ -74,6 +74,21 @@ pub fn hashString(str: []const u8, hash_type: HashType) u32 {
     return seed1;
 }
 
+const HASH_TABLE_DECRYPTION_KEY = 0xc3af3770;
+const BLOCK_TABLE_DECRYPTION_KEY = 0xec83b3a3;
+
+test "hashString is working properly against known values" {
+    var key: u32 = undefined;
+
+    // https://github.com/icza/mpq/blob/d3cdc0b651b74fcb355a8c48b734a969a806e45e/mpq.go#L367-L368
+    key = hashString("(hash table)", HashType.FileKey);
+    try std.testing.expect(key == HASH_TABLE_DECRYPTION_KEY);
+
+    // https://github.com/icza/mpq/blob/d3cdc0b651b74fcb355a8c48b734a969a806e45e/mpq.go#L389-L390
+    key = hashString("(block table)", HashType.FileKey);
+    try std.testing.expect(key == BLOCK_TABLE_DECRYPTION_KEY);
+}
+
 pub fn decrypt(data: []u32, key: u32) void {
     var seed1 = key;
     var seed2: u32 = 0xeeeeeeee;
