@@ -160,7 +160,7 @@ test "basic MPQ header read" {
 
 const MPQ = struct {
     header: MPQHeader,
-    hashTable: []MPQHashEntry,
+    hashTable: std.ArrayList(MPQHashEntry),
 
     pub fn init(readseeker: anytype, allocator: std.mem.Allocator) !MPQ {
         const header = try MPQHeader.init(readseeker);
@@ -175,6 +175,10 @@ const MPQ = struct {
     }
     pub fn fileByName(self: *const MPQ, name: []const u8) bool {
         return fileByHash(self, extract.FileNameHash.init(name));
+    }
+
+    pub fn deinit(self: *const MPQ) void {
+        self.hashTable.deinit();
     }
 };
 
@@ -207,6 +211,10 @@ const MPQHashEntry = extern struct {
         return !self.isEmpty() and !self.isDeleted();
     }
 
+    pub fn isMatching(self: MPQHashEntry, hash: extract.FileNameHash) bool {
+        return self.name_hash_a == hash.hash_b and self.name_hash_b == hash.hash_c;
+    }
+
     pub fn format(
         self: MPQHashEntry,
         comptime fmt: []const u8,
@@ -235,7 +243,7 @@ const MPQHashEntry = extern struct {
     }
 };
 
-pub fn readHashTable(readSeeker: anytype, header: *const MPQHeader, allocator: std.mem.Allocator) ![]MPQHashEntry {
+pub fn readHashTable(readSeeker: anytype, header: *const MPQHeader, allocator: std.mem.Allocator) !std.ArrayList(MPQHashEntry) {
     const table_size = header.hash_table_entries * @sizeOf(MPQHashEntry);
 
     // Allocate memory for the hash table
@@ -254,19 +262,19 @@ pub fn readHashTable(readSeeker: anytype, header: *const MPQHeader, allocator: s
     // Decrypt the hash table
     // MPQ uses a specific key for the hash table: "(hash table)"
     extract.decrypt(std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(hash_entries)), extract.HASH_TABLE_DECRYPTION_KEY);
-    return hash_entries;
+    return std.ArrayList(MPQHashEntry).fromOwnedSlice(allocator, hash_entries);
 }
 
 pub fn fileByHash(mpq: *const MPQ, fileHash: extract.FileNameHash) bool {
     const nb_entries = mpq.header.hash_table_entries;
     for (fileHash.hash_a & (nb_entries - 1)..nb_entries) |i| {
-        const hash_entry = mpq.hashTable[i];
+        const hash_entry = mpq.hashTable.items[i];
 
         if (hash_entry.block_index == 0xffffffff) {
             break;
         }
 
-        if (hash_entry.name_hash_a == fileHash.hash_b and hash_entry.name_hash_b == fileHash.hash_c) {
+        if (hash_entry.isMatching(fileHash)) {
             return true;
         }
     }
@@ -297,7 +305,10 @@ pub fn main() !void {
         return err;
     };
     defer file.close();
+
     const mpq = try MPQ.init(file, allocator);
+    defer mpq.deinit();
+
     std.debug.print("{}\n", .{mpq.fileByName("(listfile)")});
     // std.debug.print("{}\n", .{extract.fileNameHash("(listfile)")});
 }
