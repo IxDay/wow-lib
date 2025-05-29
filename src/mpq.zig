@@ -17,7 +17,7 @@ const MPQError = error{
 };
 
 /// MPQ Header structure (standard format)
-const Header = extern struct {
+pub const Header = extern struct {
     // Magic identifier, must be "MPQ\x1A" (0x1A544D50 in little-endian)
     magic: [4]u8,
     // Size of the header, usually 32 bytes (0x20)
@@ -43,11 +43,16 @@ const Header = extern struct {
     block_table_offset_high: u16 = 0,
 
     pub fn isValid(self: Header) bool {
-        return std.mem.eql(u8, &self.magic, "MPQ\x1A");
+        return std.mem.eql(u8, &self.magic, "MPQ\x1A") or
+            std.mem.eql(u8, &self.magic, "MPQ\x1B");
+    }
+
+    pub fn hasUserData(self: Header) bool {
+        return self.magic[3] == '\x1B';
     }
 
     pub fn sectorSize(self: Header) u32 {
-        return 512 << self.sector_size_shift;
+        return @as(u32, 512) << @intCast(self.sector_size_shift);
     }
 
     pub fn init(reader: anytype) !Header {
@@ -87,6 +92,7 @@ const Header = extern struct {
 
         try writer.print("MPQ Header:\n", .{});
         try writer.print("  Magic: {s} (Valid: {})\n", .{ self.magic, self.isValid() });
+        try writer.print("  User Data: {}\n", .{self.hasUserData()});
         try writer.print("  Header Size: 0x{X} ({} bytes)\n", .{ self.header_size, self.header_size });
         try writer.print("  Archive Size: 0x{X} ({} bytes)\n", .{ self.archive_size, self.archive_size });
         try writer.print("  Format Version: {}\n", .{self.format_version});
