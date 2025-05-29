@@ -17,7 +17,7 @@ const MPQError = error{
 };
 
 /// MPQ Header structure (standard format)
-const MPQHeader = extern struct {
+const Header = extern struct {
     // Magic identifier, must be "MPQ\x1A" (0x1A544D50 in little-endian)
     magic: [4]u8,
     // Size of the header, usually 32 bytes (0x20)
@@ -42,24 +42,24 @@ const MPQHeader = extern struct {
     hash_table_offset_high: u16 = 0,
     block_table_offset_high: u16 = 0,
 
-    pub fn isValid(self: MPQHeader) bool {
+    pub fn isValid(self: Header) bool {
         return std.mem.eql(u8, &self.magic, "MPQ\x1A");
     }
 
-    pub fn sectorSize(self: MPQHeader) u32 {
-        return @as(u32, 512) << @as(u5, @truncate(self.sector_size_shift));
+    pub fn sectorSize(self: Header) u32 {
+        return 512 << self.sector_size_shift;
     }
 
-    pub fn init(reader: anytype) !MPQHeader {
-        var header: MPQHeader = undefined;
+    pub fn init(reader: anytype) !Header {
+        var header: Header = undefined;
 
         // // Seek to beginning of file
         // try file.seekTo(0);
 
         // Read the standard header
-        const header_read = try reader.read(std.mem.asBytes(&header)[0 .. @sizeOf(MPQHeader) - 12]); // Exclude extended fields
+        const header_read = try reader.read(std.mem.asBytes(&header)[0 .. @sizeOf(Header) - 12]); // Exclude extended fields
 
-        if (header_read < @sizeOf(MPQHeader) - 12) {
+        if (header_read < @sizeOf(Header) - 12) {
             return MPQError.ReadError;
         }
 
@@ -69,15 +69,15 @@ const MPQHeader = extern struct {
         }
 
         // If this is a v1 header, read extended fields
-        if (header.format_version >= 1 and header.header_size >= @sizeOf(MPQHeader)) {
-            _ = try reader.read(std.mem.asBytes(&header)[@sizeOf(MPQHeader) - 12 ..]);
+        if (header.format_version >= 1 and header.header_size >= @sizeOf(Header)) {
+            _ = try reader.read(std.mem.asBytes(&header)[@sizeOf(Header) - 12 ..]);
         }
 
         return header;
     }
 
     pub fn format(
-        self: MPQHeader,
+        self: Header,
         comptime fmt: []const u8,
         options: std.fmt.FormatOptions,
         writer: anytype,
@@ -115,7 +115,7 @@ test "basic MPQ header read" {
         "\x00\x00\x02\x00" ++ // hash table entries
         "\xd8\x46\x01\x00" ++ // block table entries
         "");
-    const header = try MPQHeader.init(&buffer);
+    const header = try Header.init(&buffer);
     try std.testing.expect(header.isValid());
     try std.testing.expect(header.header_size == 44);
     try std.testing.expect(header.format_version == 1);
@@ -123,31 +123,38 @@ test "basic MPQ header read" {
 }
 
 pub const MPQ = struct {
-    header: MPQHeader,
-    hashTable: std.ArrayList(MPQHashEntry),
+    header: Header,
+    hash_table: std.ArrayList(HashEntry),
+    block_table: std.ArrayList(BlockEntry),
+    block_entry_indices: std.ArrayList(usize),
+    files_count: u32,
 
     pub fn init(read_seeker: anytype, allocator: std.mem.Allocator) !MPQ {
-        const header = try MPQHeader.init(read_seeker);
-        return MPQ{
+        const header = try Header.init(read_seeker);
+        var mpq = MPQ{
             .header = header,
-            .hashTable = try readHashTable(
-                read_seeker,
-                &header,
-                allocator,
-            ),
+            .hash_table = undefined,
+            .block_table = undefined,
+            .block_entry_indices = undefined,
+            .files_count = 0,
         };
+        try readHashTable(&mpq, read_seeker, allocator);
+        try readBlockTable(&mpq, read_seeker, allocator);
+        return mpq;
     }
     pub fn fileByName(self: *const MPQ, name: []const u8) bool {
         return fileByHash(self, hash.FileName.init(name));
     }
 
     pub fn deinit(self: *const MPQ) void {
-        self.hashTable.deinit();
+        self.hash_table.deinit();
+        self.block_table.deinit();
+        self.block_entry_indices.deinit();
     }
 };
 
 /// MPQ Hash Table Entry structure
-const MPQHashEntry = extern struct {
+const HashEntry = extern struct {
     // File path hash part A
     name_hash_a: u32,
     // File path hash part B
@@ -163,24 +170,24 @@ const MPQHashEntry = extern struct {
     const EMPTY: u32 = 0xFFFFFFFF;
     const DELETED: u32 = 0xFFFFFFFE;
 
-    pub fn isEmpty(self: MPQHashEntry) bool {
+    pub fn isEmpty(self: HashEntry) bool {
         return self.name_hash_a == EMPTY;
     }
 
-    pub fn isDeleted(self: MPQHashEntry) bool {
+    pub fn isDeleted(self: HashEntry) bool {
         return self.name_hash_a == DELETED;
     }
 
-    pub fn isValid(self: MPQHashEntry) bool {
+    pub fn isValid(self: HashEntry) bool {
         return !self.isEmpty() and !self.isDeleted();
     }
 
-    pub fn isMatching(self: MPQHashEntry, file_hash: hash.FileName) bool {
+    pub fn isMatching(self: HashEntry, file_hash: hash.FileName) bool {
         return self.name_hash_a == file_hash.hash_b and self.name_hash_b == file_hash.hash_c;
     }
 
     pub fn format(
-        self: MPQHashEntry,
+        self: HashEntry,
         comptime fmt: []const u8,
         options: std.fmt.FormatOptions,
         writer: anytype,
@@ -207,15 +214,15 @@ const MPQHashEntry = extern struct {
     }
 };
 
-pub fn readHashTable(read_seeker: anytype, header: *const MPQHeader, allocator: std.mem.Allocator) !std.ArrayList(MPQHashEntry) {
-    const table_size = header.hash_table_entries * @sizeOf(MPQHashEntry);
+pub fn readHashTable(mpq: *MPQ, read_seeker: anytype, allocator: std.mem.Allocator) !void {
+    const table_size = mpq.header.hash_table_entries * @sizeOf(HashEntry);
 
     // Allocate memory for the hash table
-    const hash_entries = try allocator.alloc(MPQHashEntry, header.hash_table_entries);
+    const hash_entries = try allocator.alloc(HashEntry, mpq.header.hash_table_entries);
     errdefer allocator.free(hash_entries);
 
     // Seek to the hash table position
-    try read_seeker.seekTo(header.hash_table_offset);
+    try read_seeker.seekTo(mpq.header.hash_table_offset);
 
     // Read the encrypted hash table
     const bytes_read = try read_seeker.read(std.mem.sliceAsBytes(hash_entries));
@@ -226,13 +233,13 @@ pub fn readHashTable(read_seeker: anytype, header: *const MPQHeader, allocator: 
     // Decrypt the hash table
     // MPQ uses a specific key for the hash table: "(hash table)"
     hash.decrypt(std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(hash_entries)), hash.HASH_TABLE_DECRYPTION_KEY);
-    return std.ArrayList(MPQHashEntry).fromOwnedSlice(allocator, hash_entries);
+    mpq.hash_table = std.ArrayList(HashEntry).fromOwnedSlice(allocator, hash_entries);
 }
 
 pub fn fileByHash(mpq: *const MPQ, file_hash: hash.FileName) bool {
     const nb_entries = mpq.header.hash_table_entries;
     for (file_hash.hash_a & (nb_entries - 1)..nb_entries) |i| {
-        const hash_entry = mpq.hashTable.items[i];
+        const hash_entry = mpq.hash_table.items[i];
 
         if (hash_entry.block_index == 0xffffffff) {
             break;
@@ -243,4 +250,109 @@ pub fn fileByHash(mpq: *const MPQ, file_hash: hash.FileName) bool {
         }
     }
     return false;
+}
+
+/// MPQ Block Table Entry structure
+const BlockEntry = extern struct {
+    // File position in the archive
+    file_position: u32,
+    // Compressed file size
+    compressed_size: u32,
+    // Uncompressed file size
+    file_size: u32,
+    // File flags
+    flags: u32,
+
+    // Block entry flag constants
+    pub const Flags = enum(u32) {
+        // Flag indicating that block is a file, and follows the file data format; otherwise, block is free space or unused.
+        file = 0x80000000,
+
+        // Flag indicating that file is stored as a single unit, rather than split into sectors.
+        single = 0x01000000,
+
+        //Flag indicating that the file has checksums for each sector (explained in the File Data section). Ignored if file is not compressed or imploded.
+        extra = 0x04000000,
+
+        // Flag indicating that the file is compressed.
+        compressed = 0x0000FF00,
+
+        // Flag indicating that the file is compressed with pkware algorithm.
+        pkware = 0x00000100,
+
+        // Flag indicating that the file is under multiple compression.
+        compressed_multi = 0x00000200,
+
+        // Flag indicating that the file is encrypted.
+        encrypted = 0x00010000,
+    };
+
+    pub fn isCompressed(self: BlockEntry) bool {
+        return (self.flags & BlockEntry.Flags.compressed) != 0;
+    }
+
+    pub fn isEncrypted(self: BlockEntry) bool {
+        return (self.flags & BlockEntry.Flags.encrypted) != 0;
+    }
+
+    pub fn exists(self: BlockEntry) bool {
+        return (self.flags & BlockEntry.Flags.file) != 0;
+    }
+
+    pub fn compressionType(self: BlockEntry) u32 {
+        return self.flags & BlockEntry.Flags.compressed;
+    }
+
+    pub fn format(
+        self: BlockEntry,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        try writer.print("Block Entry:\n", .{});
+        try writer.print("  File Position: 0x{X}\n", .{self.file_position});
+        try writer.print("  Compressed Size: {} bytes\n", .{self.compressed_size});
+        try writer.print("  File Size: {} bytes\n", .{self.file_size});
+        try writer.print("  Flags: 0x{X}\n", .{self.flags});
+        try writer.print("  - Exists: {}\n", .{self.exists()});
+        try writer.print("  - Compressed: {}\n", .{self.isCompressed()});
+        try writer.print("  - Encrypted: {}\n", .{self.isEncrypted()});
+        if (self.isCompressed()) {
+            try writer.print("  - Compression Type: 0x{X}\n", .{self.compressionType()});
+        }
+    }
+};
+
+pub fn readBlockTable(mpq: *MPQ, read_seeker: anytype, allocator: std.mem.Allocator) !void {
+    const count_entries = mpq.header.block_table_entries;
+    const table_size = count_entries * @sizeOf(BlockEntry);
+
+    // Allocate memory for the block table
+    const block_entries = try allocator.alloc(BlockEntry, count_entries);
+    errdefer allocator.free(block_entries);
+
+    // Seek to the block table position
+    try read_seeker.seekTo(mpq.header.block_table_offset);
+
+    // Read the encrypted block table
+    const bytes_read = try read_seeker.read(std.mem.sliceAsBytes(block_entries));
+    if (bytes_read < table_size) {
+        return MPQError.ReadError;
+    }
+
+    // Decrypt the block table
+    // MPQ uses a specific key for the block table: "(block table)"
+    hash.decrypt(std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(block_entries)), hash.BLOCK_TABLE_DECRYPTION_KEY);
+
+    mpq.block_table = std.ArrayList(BlockEntry).fromOwnedSlice(allocator, block_entries);
+    mpq.block_entry_indices = std.ArrayList(usize).init(allocator);
+    for (0..count_entries) |i| {
+        if (block_entries[i].flags & @intFromEnum(BlockEntry.Flags.file) != 0) {
+            try mpq.block_entry_indices.append(i);
+            mpq.files_count += 1;
+        }
+    }
 }
