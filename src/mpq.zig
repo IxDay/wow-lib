@@ -1,5 +1,6 @@
 const std = @import("std");
-const extract = @import("./extract.zig");
+const utils = @import("./utils.zig");
+const hash = @import("./hash.zig");
 
 /// Error types for MPQ operations
 const MPQError = error{
@@ -103,45 +104,8 @@ const MPQHeader = extern struct {
     }
 };
 
-// Error type that readers can return
-const ReaderError = error{
-    EndOfStream,
-    InvalidInput,
-    BrokenPipe,
-    SystemResources,
-    OperationAborted,
-    NotOpenForReading,
-    WouldBlock,
-    ConnectionResetByPeer,
-    IsDir,
-    AccessDenied,
-    Unexpected,
-};
-
-// Memory buffer reader
-const BufferReader = struct {
-    buffer: []const u8,
-    pos: usize,
-
-    pub fn init(buffer: []const u8) BufferReader {
-        return BufferReader{ .buffer = buffer, .pos = 0 };
-    }
-
-    pub fn read(self: *BufferReader, buffer: []u8) ReaderError!usize {
-        if (self.pos >= self.buffer.len) return 0;
-
-        const available = self.buffer.len - self.pos;
-        const to_read = @min(buffer.len, available);
-
-        @memcpy(buffer[0..to_read], self.buffer[self.pos .. self.pos + to_read]);
-        self.pos += to_read;
-
-        return to_read;
-    }
-};
-
 test "basic MPQ header read" {
-    var buffer = BufferReader.init("MPQ\x1a" ++ // magic number
+    var buffer = utils.BufferReader.init("MPQ\x1a" ++ // magic number
         "\x2c\x00\x00\x00" ++ // header size (44)
         "\x2e\xef\xba\xab" ++ // archive size (~2.8GB)
         "\x01\x00" ++ // format version (1)
@@ -158,23 +122,23 @@ test "basic MPQ header read" {
     // std.debug.print("{}", .{header});
 }
 
-const MPQ = struct {
+pub const MPQ = struct {
     header: MPQHeader,
     hashTable: std.ArrayList(MPQHashEntry),
 
-    pub fn init(readseeker: anytype, allocator: std.mem.Allocator) !MPQ {
-        const header = try MPQHeader.init(readseeker);
+    pub fn init(read_seeker: anytype, allocator: std.mem.Allocator) !MPQ {
+        const header = try MPQHeader.init(read_seeker);
         return MPQ{
             .header = header,
             .hashTable = try readHashTable(
-                readseeker,
+                read_seeker,
                 &header,
                 allocator,
             ),
         };
     }
     pub fn fileByName(self: *const MPQ, name: []const u8) bool {
-        return fileByHash(self, extract.FileNameHash.init(name));
+        return fileByHash(self, hash.FileName.init(name));
     }
 
     pub fn deinit(self: *const MPQ) void {
@@ -211,8 +175,8 @@ const MPQHashEntry = extern struct {
         return !self.isEmpty() and !self.isDeleted();
     }
 
-    pub fn isMatching(self: MPQHashEntry, hash: extract.FileNameHash) bool {
-        return self.name_hash_a == hash.hash_b and self.name_hash_b == hash.hash_c;
+    pub fn isMatching(self: MPQHashEntry, file_hash: hash.FileName) bool {
+        return self.name_hash_a == file_hash.hash_b and self.name_hash_b == file_hash.hash_c;
     }
 
     pub fn format(
@@ -243,7 +207,7 @@ const MPQHashEntry = extern struct {
     }
 };
 
-pub fn readHashTable(readSeeker: anytype, header: *const MPQHeader, allocator: std.mem.Allocator) !std.ArrayList(MPQHashEntry) {
+pub fn readHashTable(read_seeker: anytype, header: *const MPQHeader, allocator: std.mem.Allocator) !std.ArrayList(MPQHashEntry) {
     const table_size = header.hash_table_entries * @sizeOf(MPQHashEntry);
 
     // Allocate memory for the hash table
@@ -251,64 +215,32 @@ pub fn readHashTable(readSeeker: anytype, header: *const MPQHeader, allocator: s
     errdefer allocator.free(hash_entries);
 
     // Seek to the hash table position
-    try readSeeker.seekTo(header.hash_table_offset);
+    try read_seeker.seekTo(header.hash_table_offset);
 
     // Read the encrypted hash table
-    const bytes_read = try readSeeker.read(std.mem.sliceAsBytes(hash_entries));
+    const bytes_read = try read_seeker.read(std.mem.sliceAsBytes(hash_entries));
     if (bytes_read < table_size) {
         return MPQError.ReadError;
     }
 
     // Decrypt the hash table
     // MPQ uses a specific key for the hash table: "(hash table)"
-    extract.decrypt(std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(hash_entries)), extract.HASH_TABLE_DECRYPTION_KEY);
+    hash.decrypt(std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(hash_entries)), hash.HASH_TABLE_DECRYPTION_KEY);
     return std.ArrayList(MPQHashEntry).fromOwnedSlice(allocator, hash_entries);
 }
 
-pub fn fileByHash(mpq: *const MPQ, fileHash: extract.FileNameHash) bool {
+pub fn fileByHash(mpq: *const MPQ, file_hash: hash.FileName) bool {
     const nb_entries = mpq.header.hash_table_entries;
-    for (fileHash.hash_a & (nb_entries - 1)..nb_entries) |i| {
+    for (file_hash.hash_a & (nb_entries - 1)..nb_entries) |i| {
         const hash_entry = mpq.hashTable.items[i];
 
         if (hash_entry.block_index == 0xffffffff) {
             break;
         }
 
-        if (hash_entry.isMatching(fileHash)) {
+        if (hash_entry.isMatching(file_hash)) {
             return true;
         }
     }
     return false;
-}
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Get args
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
-
-    // Skip program name
-    _ = args.next();
-
-    // Get MPQ file path
-    const mpq_path = args.next() orelse {
-        std.debug.print("Usage: {s} <mpq_file_path>\n", .{std.os.argv[0]});
-        return error.InvalidArgs;
-    };
-
-    // Open MPQ file
-    const file = std.fs.cwd().openFile(mpq_path, .{}) catch |err| {
-        std.debug.print("Failed to open MPQ file: {}\n", .{err});
-        return err;
-    };
-    defer file.close();
-
-    const mpq = try MPQ.init(file, allocator);
-    defer mpq.deinit();
-
-    std.debug.print("{}\n", .{mpq.fileByName("(listfile)")});
-    // std.debug.print("{}\n", .{extract.fileNameHash("(listfile)")});
 }
