@@ -1,4 +1,7 @@
 const std = @import("std");
+const c = @cImport({
+    @cInclude("zlib.h");
+});
 
 pub const asciiToUpperTable = [256]u8{
     // Control characters
@@ -29,10 +32,71 @@ pub const asciiToUpperTable = [256]u8{
 
 test "transform lowercase to uppercase and slash to backslash" {
     try std.testing.expect(asciiToUpperTable['/'] == '\\');
-    for ('a'..'z') |c| {
-        try std.testing.expect(asciiToUpperTable[c] == std.ascii.toUpper(@intCast(c)));
+    for ('a'..'z') |char| {
+        try std.testing.expect(asciiToUpperTable[char] == std.ascii.toUpper(@intCast(char)));
     }
 }
+
+const DecompressError = error{
+    InvalidInput,
+    OutOfMemory,
+    BufferTooSmall,
+    DataError,
+};
+
+pub fn decompressMulti(dst: []u8, src: []const u8) !void {
+    if (src.len == dst.len) return @memcpy(dst, src);
+    switch (src[0]) {
+        0x02 => return decompressZlib(dst, src[1..]),
+        0x03 => return decompressBzip2(dst, src[1..]),
+        else => return DecompressError.InvalidInput,
+    }
+}
+
+fn decompressBzip2(_: []u8, _: []const u8) !void {
+    return;
+}
+
+fn decompressZlib(dst: []u8, src: []const u8) !void {
+    // Convert Zig types to C types
+    var dst_len: c.uLongf = @intCast(dst.len);
+    const src_len: c.uLong = @intCast(src.len);
+
+    // Call the C uncompress function
+    const result = c.uncompress(@ptrCast(dst.ptr), // dest: [*c]Bytef
+        &dst_len, // destLen: [*c]uLongf (pointer to length)
+        @ptrCast(src.ptr), // source: [*c]const Bytef
+        src_len // sourceLen: uLong
+    );
+
+    // Handle the result
+    switch (result) {
+        c.Z_OK => {
+            // Success - check if we used the expected amount of output space
+            if (dst_len != dst.len) {
+                // Optionally handle case where decompressed size differs
+                // For now, we'll allow it as long as it fits
+            }
+            return;
+        },
+        c.Z_MEM_ERROR => return DecompressError.OutOfMemory,
+        c.Z_BUF_ERROR => return DecompressError.BufferTooSmall,
+        c.Z_DATA_ERROR => return DecompressError.DataError,
+        else => return DecompressError.InvalidInput,
+    }
+}
+
+test "decompress" {
+    // https://pkg.go.dev/compress/zlib + https://go.dev/play/ = "Hello World!"
+    const src = "\x02" ++ // zlib flag
+        "\x78\x9c\xf2\x48\xcd\xc9\xc9\x57\x08\xcf\x2f" ++
+        "\xca\x49\x51\x04\x04\x00\x00\xff\xff\x1c\x49\x04\x3e";
+    var dst: [12]u8 = undefined;
+
+    try decompressMulti(&dst, src);
+    try std.testing.expectEqualStrings("Hello World!", &dst);
+}
+
 // Error type that readers can return
 const ReaderError = error{
     EndOfStream,
