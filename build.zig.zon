@@ -1,0 +1,22 @@
+.{
+    // the name of your project
+    .name = .wow_lib,
+    // the version of your project
+    .version = "0.0.1",
+
+    .fingerprint = 0xc3d34da10b0fd46c,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "list_version.zig",
+        "src",
+        "README.md",
+    },
+    // the actual packages you need as dependencies of your project
+    .dependencies = .{
+        .z = .{
+            .url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+            .hash = "1220c1854d7b4c2b5cbdd8ce6593c37e4bf1ac4032664735e1537c3848becb3b5834",
+        },
+    },
+}

@@ -20,18 +20,27 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(mpq);
 
-    // // Optional: Create a shared library that all executables can use
-    // const shared_lib = b.addStaticLibrary(.{
-    //     .name = "shared",
-    //     .root_source_file = b.path("src/shared/lib.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
-
-    // // Link the shared library to all executables
-    // main_exe.linkLibrary(shared_lib);
-    // cli_exe.linkLibrary(shared_lib);
-    // server_exe.linkLibrary(shared_lib);
+    // Dependencies build
+    const z_dep = b.dependency("z", .{});
+    const z = b.addStaticLibrary(.{
+        .name = "z",
+        .target = target,
+        .optimize = optimize,
+    });
+    z.addCSourceFiles(.{
+        .root = z_dep.path(""),
+        .files = &.{
+            "adler32.c", "compress.c", "crc32.c",    "deflate.c",
+            "gzclose.c", "gzlib.c",    "gzread.c",   "gzwrite.c",
+            "inflate.c", "infback.c",  "inftrees.c", "inffast.c",
+            "trees.c",   "uncompr.c",  "zutil.c",
+        },
+        .flags = &.{
+            "-DHAVE_SYS_TYPES_H", "-DHAVE_STDINT_H", "-DHAVE_STDDEF_H",
+            "-DZ_HAVE_UNISTD_H",
+        },
+    });
+    z.linkLibC();
 
     // Run steps for each executable
 
@@ -57,7 +66,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    // main_tests.linkLibrary(shared_lib);
+    utils_tests.addIncludePath(z_dep.path(""));
+    utils_tests.linkLibrary(z);
 
     // Run all tests
     const run_utils_tests = b.addRunArtifact(utils_tests);
