@@ -148,19 +148,19 @@ pub const MPQ = struct {
         try readBlockTable(&mpq, read_seeker, allocator);
         return mpq;
     }
-    pub fn fileByName(self: *const MPQ, read_seeker: anytype, name: []const u8, allocator: std.mem.Allocator) ?[]u8 {
+    pub fn fileByName(self: *const MPQ, read_seeker: anytype, name: []const u8, allocator: std.mem.Allocator) !?[]u8 {
         const entry = try hashEntry(self, hash.FileName.init(name));
-        var counter = 0;
+        var counter: u32 = 0;
 
         for (0..entry.hash.block_index) |i| {
-            if (!self.block_table.items[i].flags.exits()) counter += 1;
+            if (!self.block_table.items[i].exists()) counter += 1;
         }
 
         const file_index = entry.hash.block_index - counter;
         if (file_index < 0 or file_index > self.files_count) {
             return null;
         }
-        const block_entry_index = self.block_entry_indices[file_index];
+        const block_entry_index = self.block_entry_indices.items[file_index];
         const block_entry = self.block_table.items[block_entry_index];
         const block_size = self.header.sectorSize();
         const block_offset = block_entry.file_position;
@@ -182,7 +182,7 @@ pub const MPQ = struct {
         } else {
             if (!block_entry.isSingle()) {
                 for (0..block_count) |i| {
-                    packed_block_offsets[i] = i * block_size;
+                    packed_block_offsets[i] = @as(u32, @truncate(i)) * block_size;
                 }
                 packed_block_offsets[block_count] = block_size;
             } else {
@@ -192,19 +192,27 @@ pub const MPQ = struct {
         }
         const content = try allocator.alloc(u8, block_entry.file_size);
         var index: u32 = 0;
+        var buffer: []u8 = undefined;
 
         for (0..block_count) |i| {
-            var unpacked_size: u32 = block_entry.file_size - block_size * i;
+            var unpacked_size: u32 = block_entry.file_size - block_size * @as(u32, @truncate(i));
             if (block_entry.isSingle()) {
                 unpacked_size = block_entry.file_size;
             } else if (i < block_count - 1) {
                 unpacked_size = block_size;
             }
-            const size = packed_block_offsets[i + 1] - packed_block_offsets[i];
-            read_seeker.seekTo(block_entry.file_position + packed_block_offsets[i]);
+            buffer = try allocator.alloc(u8, packed_block_offsets[i + 1] - packed_block_offsets[i]);
 
+            try read_seeker.seekTo(block_entry.file_position + packed_block_offsets[i]);
+            _ = try read_seeker.read(std.mem.sliceAsBytes(buffer));
+            if (block_entry.isEncrypted()) {
+                return MPQError.InvalidMPQFile; // not supported yet
+            }
+
+            if (block_entry.isCompressedMulti()) {}
             index += unpacked_size;
         }
+        return null;
     }
 
     pub fn deinit(self: *const MPQ) void {
@@ -349,27 +357,31 @@ const BlockEntry = extern struct {
     };
 
     pub fn isCompressed(self: BlockEntry) bool {
-        return (self.flags & BlockEntry.Flags.compressed) != 0;
+        return (self.flags & @intFromEnum(BlockEntry.Flags.compressed)) != 0;
+    }
+
+    pub fn isCompressedMulti(self: BlockEntry) bool {
+        return (self.flags & @intFromEnum(BlockEntry.Flags.compressed_multi)) != 0;
     }
 
     pub fn isEncrypted(self: BlockEntry) bool {
-        return (self.flags & BlockEntry.Flags.encrypted) != 0;
+        return (self.flags & @intFromEnum(BlockEntry.Flags.encrypted)) != 0;
     }
 
     pub fn isSingle(self: BlockEntry) bool {
-        return (self.flags & BlockEntry.Flags.single) != 0;
+        return (self.flags & @intFromEnum(BlockEntry.Flags.single)) != 0;
     }
 
     pub fn hasExtra(self: BlockEntry) bool {
-        return (self.flags & BlockEntry.Flags.extra) != 0;
+        return (self.flags & @intFromEnum(BlockEntry.Flags.extra)) != 0;
     }
 
     pub fn exists(self: BlockEntry) bool {
-        return (self.flags & BlockEntry.Flags.file) != 0;
+        return (self.flags & @intFromEnum(BlockEntry.Flags.file)) != 0;
     }
 
     pub fn compressionType(self: BlockEntry) u32 {
-        return self.flags & BlockEntry.Flags.compressed;
+        return self.flags & @intFromEnum(BlockEntry.Flags.compressed);
     }
 
     pub fn format(
