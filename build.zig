@@ -51,62 +51,21 @@ pub fn build(b: *std.Build) void {
     const run_mpq_step = b.step("run:mpq", "Run the mpq application");
     run_mpq_step.dependOn(&run_mpq.step);
 
-    // // Build all executables step
-    // const build_all_step = b.step("build-all", "Build all executables");
-    // build_all_step.dependOn(&main_exe.step);
-    // build_all_step.dependOn(&cli_exe.step);
-    // build_all_step.dependOn(&server_exe.step);
-
-    // // Unit tests for each component
-    // const main_tests = b.addTest(.{
-    //     .root_source_file = b.path("src/main.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
+    // Unit tests for each component
+    const utils_tests = b.addTest(.{
+        .root_source_file = b.path("src/utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     // main_tests.linkLibrary(shared_lib);
 
-    // const cli_tests = b.addTest(.{
-    //     .root_source_file = b.path("src/cli.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
-    // cli_tests.linkLibrary(shared_lib);
+    // Run all tests
+    const run_utils_tests = b.addRunArtifact(utils_tests);
 
-    // const server_tests = b.addTest(.{
-    //     .root_source_file = b.path("src/server.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
-    // server_tests.linkLibrary(shared_lib);
+    const test_step = b.step("test", "Run all unit tests");
+    test_step.dependOn(&run_utils_tests.step);
 
-    // const shared_tests = b.addTest(.{
-    //     .root_source_file = b.path("src/shared/lib.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
-
-    // // Run all tests
-    // const run_main_tests = b.addRunArtifact(main_tests);
-    // const run_cli_tests = b.addRunArtifact(cli_tests);
-    // const run_server_tests = b.addRunArtifact(server_tests);
-    // const run_shared_tests = b.addRunArtifact(shared_tests);
-
-    // const test_step = b.step("test", "Run all unit tests");
-    // test_step.dependOn(&run_main_tests.step);
-    // test_step.dependOn(&run_cli_tests.step);
-    // test_step.dependOn(&run_server_tests.step);
-    // test_step.dependOn(&run_shared_tests.step);
-
-    // // Individual test steps
-    // const test_main_step = b.step("test-main", "Run main app tests");
-    // test_main_step.dependOn(&run_main_tests.step);
-
-    // const test_cli_step = b.step("test-cli", "Run CLI tool tests");
-    // test_cli_step.dependOn(&run_cli_tests.step);
-
-    // const test_server_step = b.step("test-server", "Run server tests");
-    // test_server_step.dependOn(&run_server_tests.step);
-
-    // const test_shared_step = b.step("test-shared", "Run shared library tests");
-    // test_shared_step.dependOn(&run_shared_tests.step);
+    // Individual test steps
+    const test_utils_step = b.step("test:utils", "Run utils tests");
+    test_utils_step.dependOn(&run_utils_tests.step);
 }
