@@ -4,22 +4,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const list_version = b.addExecutable(.{
-        .name = "list_version",
-        .root_source_file = b.path("list_version.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    b.installArtifact(list_version);
-
-    const mpq = b.addExecutable(.{
-        .name = "mpq",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    b.installArtifact(mpq);
-
     // Dependencies build
     const z_dep = b.dependency("z", .{});
     const z = b.addStaticLibrary(.{
@@ -41,6 +25,58 @@ pub fn build(b: *std.Build) void {
         },
     });
     z.linkLibC();
+
+    const bz2_dep = b.dependency("bz2", .{});
+    const bz2 = b.addStaticLibrary(.{
+        .name = "bz2",
+        .target = target,
+        .optimize = optimize,
+    });
+    bz2.addCSourceFiles(.{
+        .root = bz2_dep.path(""),
+        .files = &.{
+            "blocksort.c",  "bzlib.c",   "compress.c",  "crctable.c",
+            "decompress.c", "huffman.c", "randtable.c",
+        },
+        .flags = &.{
+            "-fPIC",                         "-Wall",               "-Wextra",
+            "-Wmissing-prototypes",          "-Wstrict-prototypes", "-Wmissing-declarations",
+            "-Wpointer-arith",               "-Wformat-security",   "-Wredundant-decls",
+            "-Wwrite-strings",               "-Wshadow",            "-Winline",
+            "-Wnested-externs",              "-Wfloat-equal",       "-Wundef",
+            "-Wendif-labels",                "-Wempty-body",        "-Wcast-align",
+            "-Wclobbered",                   "-Wvla",               "-Wpragmas",
+            "-Wunreachable-code",            "-Waddress",           "-Wattributes",
+            "-Wdiv-by-zero",                 "-Wconversion",        "-Wformat-nonliteral",
+            "-Wdeclaration-after-statement", "-Wmissing-noreturn",  "-Wno-format-nonliteral",
+            "-Wmissing-field-initializers",  "-Wsign-conversion",   "-Wunused-macros",
+            "-Wunused-parameter",
+        },
+    });
+
+    bz2.linkLibC();
+
+    const list_version = b.addExecutable(.{
+        .name = "list_version",
+        .root_source_file = b.path("list_version.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(list_version);
+
+    const mpq = b.addExecutable(.{
+        .name = "mpq",
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(mpq);
+
+    mpq.addIncludePath(z_dep.path(""));
+    mpq.linkLibrary(z);
+
+    mpq.addIncludePath(bz2_dep.path(""));
+    mpq.linkLibrary(bz2);
 
     // Run steps for each executable
 
@@ -69,6 +105,8 @@ pub fn build(b: *std.Build) void {
     utils_tests.addIncludePath(z_dep.path(""));
     utils_tests.linkLibrary(z);
 
+    utils_tests.addIncludePath(bz2_dep.path(""));
+    utils_tests.linkLibrary(bz2);
     // Run all tests
     const run_utils_tests = b.addRunArtifact(utils_tests);
 

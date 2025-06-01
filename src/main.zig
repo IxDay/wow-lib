@@ -28,7 +28,7 @@ pub fn main() !void {
 
     const archive = try mpq.MPQ.init(file, allocator);
     defer archive.deinit();
-
-    std.debug.print("{?s}\n", .{try archive.fileByName(file, "(listfile)", allocator)});
-    // std.debug.print("{}\n", .{extract.fileNameHash("(listfile)")});
+    const content = try archive.fileByName(file, "(listfile)", allocator);
+    defer allocator.free(content);
+    std.debug.print("{s}\n", .{content});
 }

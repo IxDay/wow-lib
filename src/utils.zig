@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @cImport({
     @cInclude("zlib.h");
+    @cInclude("bzlib.h");
 });
 
 pub const asciiToUpperTable = [256]u8{
@@ -42,6 +43,8 @@ const DecompressError = error{
     OutOfMemory,
     BufferTooSmall,
     DataError,
+    IOError,
+    Unknown,
 };
 
 pub fn decompressMulti(dst: []u8, src: []const u8) !void {
@@ -53,8 +56,24 @@ pub fn decompressMulti(dst: []u8, src: []const u8) !void {
     }
 }
 
-fn decompressBzip2(_: []u8, _: []const u8) !void {
-    return;
+fn decompressBzip2(dst: []u8, src: []const u8) !void {
+    var dst_len: c.uint = @intCast(dst.len);
+
+    const result = c.BZ2_bzBuffToBuffDecompress(
+        @ptrCast(dst.ptr),
+        &dst_len,
+        @constCast(src.ptr),
+        @intCast(src.len),
+        0,
+        0,
+    );
+
+    switch (result) {
+        c.BZ_OK => return,
+        c.BZ_OUTBUFF_FULL => return DecompressError.BufferTooSmall,
+        c.BZ_IO_ERROR => return DecompressError.IOError,
+        else => return DecompressError.Unknown,
+    }
 }
 
 fn decompressZlib(dst: []u8, src: []const u8) !void {
@@ -82,19 +101,29 @@ fn decompressZlib(dst: []u8, src: []const u8) !void {
         c.Z_MEM_ERROR => return DecompressError.OutOfMemory,
         c.Z_BUF_ERROR => return DecompressError.BufferTooSmall,
         c.Z_DATA_ERROR => return DecompressError.DataError,
-        else => return DecompressError.InvalidInput,
+        else => return DecompressError.Unknown,
     }
 }
 
 test "decompress" {
-    // https://pkg.go.dev/compress/zlib + https://go.dev/play/ = "Hello World!"
-    const src = "\x02" ++ // zlib flag
+    // print(''.join(r'\x%02x'%i for i in zlib.compress(b"Hello World!")))
+    const src_zlib = "\x02" ++ // zlib flag
         "\x78\x9c\xf2\x48\xcd\xc9\xc9\x57\x08\xcf\x2f" ++
         "\xca\x49\x51\x04\x04\x00\x00\xff\xff\x1c\x49\x04\x3e";
-    var dst: [12]u8 = undefined;
+    var dst_zlib: [12]u8 = undefined;
 
-    try decompressMulti(&dst, src);
-    try std.testing.expectEqualStrings("Hello World!", &dst);
+    try decompressMulti(&dst_zlib, src_zlib);
+    try std.testing.expectEqualStrings("Hello World!", &dst_zlib);
+
+    // print(''.join(r'\x%02x'%i for i in bz2.compress(b"Hello World!")))
+    const src_bzip2 = "\x03" ++ // bzip2 flag
+        "\x42\x5a\x68\x39\x31\x41\x59\x26\x53\x59\x6b\x1a\x7c\xae\x00\x00\x01" ++
+        "\x17\x80\x60\x00\x00\x40\x00\x80\x06\x04\x90\x00\x20\x00\x22\x06\x9a" ++
+        "\x3d\x42\x0c\x98\x8e\x69\x73\x05\x01\xe2\xee\x48\xa7\x0a\x12\x0d\x63" ++
+        "\x4f\x95\xc0";
+    var dst_bzip2: [12]u8 = undefined;
+    try decompressMulti(&dst_bzip2, src_bzip2);
+    try std.testing.expectEqualStrings("Hello World!", &dst_bzip2);
 }
 
 // Error type that readers can return

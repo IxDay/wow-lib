@@ -148,7 +148,7 @@ pub const MPQ = struct {
         try readBlockTable(&mpq, read_seeker, allocator);
         return mpq;
     }
-    pub fn fileByName(self: *const MPQ, read_seeker: anytype, name: []const u8, allocator: std.mem.Allocator) !?[]u8 {
+    pub fn fileByName(self: *const MPQ, read_seeker: anytype, name: []const u8, allocator: std.mem.Allocator) ![]u8 {
         const entry = try hashEntry(self, hash.FileName.init(name));
         var counter: u32 = 0;
 
@@ -158,7 +158,7 @@ pub const MPQ = struct {
 
         const file_index = entry.hash.block_index - counter;
         if (file_index < 0 or file_index > self.files_count) {
-            return null;
+            return MPQError.InvalidBlockTable;
         }
         const block_entry_index = self.block_entry_indices.items[file_index];
         const block_entry = self.block_table.items[block_entry_index];
@@ -173,6 +173,8 @@ pub const MPQ = struct {
             u32,
             if (block_entry.hasExtra()) block_count + 2 else block_count + 1,
         );
+        defer allocator.free(packed_block_offsets);
+
         if (block_entry.isCompressed() and !block_entry.isSingle()) {
             try read_seeker.seekTo(block_offset);
             _ = try read_seeker.read(std.mem.sliceAsBytes(packed_block_offsets));
@@ -202,6 +204,7 @@ pub const MPQ = struct {
                 unpacked_size = block_size;
             }
             buffer = try allocator.alloc(u8, packed_block_offsets[i + 1] - packed_block_offsets[i]);
+            defer allocator.free(buffer);
 
             try read_seeker.seekTo(block_entry.file_position + packed_block_offsets[i]);
             _ = try read_seeker.read(std.mem.sliceAsBytes(buffer));
@@ -209,10 +212,16 @@ pub const MPQ = struct {
                 return MPQError.InvalidMPQFile; // not supported yet
             }
 
-            if (block_entry.isCompressedMulti()) {}
+            if (block_entry.isCompressedMulti()) {
+                try utils.decompressMulti(content[index .. index + unpacked_size], buffer);
+            } else if (block_entry.isPKWare()) {
+                return MPQError.InvalidMPQFile; // not supported yet
+            } else {
+                @memcpy(content[index..], buffer);
+            }
             index += unpacked_size;
         }
-        return null;
+        return content;
     }
 
     pub fn deinit(self: *const MPQ) void {
@@ -366,6 +375,10 @@ const BlockEntry = extern struct {
 
     pub fn isEncrypted(self: BlockEntry) bool {
         return (self.flags & @intFromEnum(BlockEntry.Flags.encrypted)) != 0;
+    }
+
+    pub fn isPKWare(self: BlockEntry) bool {
+        return (self.flags & @intFromEnum(BlockEntry.Flags.pkware)) != 0;
     }
 
     pub fn isSingle(self: BlockEntry) bool {
