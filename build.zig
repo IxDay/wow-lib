@@ -81,6 +81,16 @@ pub fn build(b: *std.Build) void {
     mpq.addIncludePath(bz2_dep.path(""));
     mpq.linkLibrary(bz2);
 
+    const blp = b.addExecutable(.{
+        .name = "blp",
+        .root_source_file = b.path("src/blp/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(blp);
+
+    blp.root_module.addImport("clap", clap.module("clap"));
+
     // Run steps for each executable
 
     const run_list_version = b.addRunArtifact(list_version);
@@ -98,6 +108,14 @@ pub fn build(b: *std.Build) void {
     }
     const run_mpq_step = b.step("run:mpq", "Run the mpq application");
     run_mpq_step.dependOn(&run_mpq.step);
+
+    const run_blp = b.addRunArtifact(blp);
+    run_blp.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_blp.addArgs(args);
+    }
+    const run_blp_step = b.step("run:blp", "Run the blp application");
+    run_blp_step.dependOn(&run_blp.step);
 
     // Unit tests for each component
     const utils_tests = b.addTest(.{
