@@ -5,6 +5,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Dependencies build
+    const clap = b.dependency("clap", .{});
+
     const z_dep = b.dependency("z", .{});
     const z = b.addStaticLibrary(.{
         .name = "z",
@@ -72,6 +74,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(mpq);
 
+    mpq.root_module.addImport("clap", clap.module("clap"));
     mpq.addIncludePath(z_dep.path(""));
     mpq.linkLibrary(z);
 

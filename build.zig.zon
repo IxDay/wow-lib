@@ -22,5 +22,9 @@
             .url = "https://github.com/libarchive/bzip2/archive/refs/tags/bzip2-1.0.8.tar.gz",
             .hash = "1220084c39a4cc8a81fbd9bf89a3974aaba1821336f80a8315c5fc12b19de4a67221",
         },
+        .clap = .{
+            .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.10.0.tar.gz",
+            .hash = "clap-0.10.0-oBajB434AQBDh-Ei3YtoKIRxZacVPF1iSwp3IX_ZB8f0",
+        },
     },
 }
