@@ -1,5 +1,6 @@
 const std = @import("std");
 const clap = @import("clap");
+const blp = @import("blp.zig");
 const builtin = @import("builtin");
 
 pub fn main() !void {
@@ -43,4 +44,6 @@ pub fn main() !void {
         return err;
     };
     defer file.close();
+    const header = try blp.Header.init(file);
+    try stdout.print("{}\n", .{header});
 }
