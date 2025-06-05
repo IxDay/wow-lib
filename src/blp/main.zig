@@ -38,12 +38,26 @@ pub fn main() !void {
     }
 
     // Open BLP file
-    const blp_path = res.positionals[0] orelse return error.MissingArg;
-    const file = std.fs.cwd().openFile(blp_path, .{}) catch |err| {
+    const input_file = res.positionals[0] orelse return error.MissingArg;
+    const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
         try stderr.print("Failed to open BLP file: {}\n", .{err});
         return err;
     };
     defer file.close();
-    const header = try blp.Header.init(file);
-    try stdout.print("{}\n", .{header});
+    const img = try blp.BLP.init(file);
+    // std.debug.print("{}", .{img.header});
+    var zimg_img = try img.toImg(file, allocator);
+    defer zimg_img.deinit();
+
+    const output_file = try outputFile(allocator, input_file);
+    defer allocator.free(output_file);
+    try zimg_img.writeToFilePath(output_file, .{ .png = .{} });
+}
+
+fn outputFile(allocator: std.mem.Allocator, input_file: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}.png",
+        .{std.fs.path.stem(input_file)},
+    );
 }
