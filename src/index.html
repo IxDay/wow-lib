@@ -77,7 +77,7 @@
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
 
-        // Lighting (necessary for textures)
+        // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 1);
         scene.add(ambientLight);
         const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
@@ -96,6 +96,51 @@
         const stopBtn = document.getElementById('stop-btn');
         const animationInfo = document.getElementById('animation-info');
 
+        // Function to completely reset the scene
+        function resetScene() {
+            // Remove all objects from scene
+            while(scene.children.length > 0) {
+                const object = scene.children[0];
+
+                // Dispose of geometries and materials
+                if (object.isMesh) {
+                    if (object.geometry) {
+                        object.geometry.dispose();
+                    }
+                    if (object.material) {
+                        if (Array.isArray(object.material)) {
+                            object.material.forEach(material => material.dispose());
+                        } else {
+                            object.material.dispose();
+                        }
+                    }
+                }
+
+                // Dispose of textures
+                if (object.material && object.material.map) {
+                    object.material.map.dispose();
+                }
+
+                scene.remove(object);
+            }
+
+            // Clean up animations
+            if (mixer) {
+                mixer.stopAllAction();
+                mixer.uncacheRoot(mixer.getRoot());
+                mixer = null;
+            }
+
+            animations = [];
+            currentAction = null;
+            animationControls.style.display = 'none';
+            animationInfo.textContent = 'No animation loaded';
+
+            // Re-add lights and helpers
+            scene.add(ambientLight);
+            scene.add(directionalLight);
+        }
+
         // File input handler
         const fileInput = document.getElementById('file-input');
         fileInput.addEventListener('change', function(event) {
@@ -104,24 +149,8 @@
 
             const reader = new FileReader();
             reader.onload = function(e) {
-                // Clear previous model and animations
-                scene.traverse(child => {
-                    if (child.isMesh) {
-                        child.geometry?.dispose();
-                        child.material?.dispose();
-                        scene.remove(child);
-                    }
-                });
-
-                if (mixer) {
-                    mixer.stopAllAction();
-                    mixer = null;
-                }
-
-                animations = [];
-                currentAction = null;
-                animationControls.style.display = 'none';
-                animationInfo.textContent = 'No animation loaded';
+                // Reset the scene before loading new model
+                resetScene();
 
                 const loader = new GLTFLoader();
 
@@ -161,6 +190,7 @@
 
                 }, undefined, function(error) {
                     console.error('Error loading model:', error);
+                    animationInfo.textContent = 'Error loading model';
                 });
             };
             reader.readAsArrayBuffer(file);
