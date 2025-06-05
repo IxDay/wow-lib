@@ -35,14 +35,13 @@ const BLPColorEncoding = enum(u8) {
         _ = fmt;
         _ = options;
 
-        const repr = switch (self) {
+        try writer.print("{s}", .{switch (self) {
             BLPColorEncoding.color_jpeg => "jpeg",
             BLPColorEncoding.color_palette => "palette",
             BLPColorEncoding.color_dxt => "dxt",
             BLPColorEncoding.color_argb8888 => "argb8888",
             BLPColorEncoding.color_argb8888_dup => "argb8888 dup",
-        };
-        try writer.print("{s}", .{repr});
+        }});
     }
 };
 
@@ -59,16 +58,57 @@ const BLPPixelFormat = enum(u8) {
     pixel_argb2565 = 9,
     pixel_bc5 = 11, // DXGI_FORMAT_BC5_UNORM
     num_pixel_formats = 12, // (no idea if format=10 exists)
+
+    pub fn format(
+        self: BLPPixelFormat,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        try writer.print("{s}", .{switch (self) {
+            BLPPixelFormat.pixel_dxt1 => "dxt1",
+            BLPPixelFormat.pixel_dxt3 => "dxt3",
+            BLPPixelFormat.pixel_argb8888 => "argb8888",
+            BLPPixelFormat.pixel_argb1555 => "argb1555",
+            BLPPixelFormat.pixel_argb4444 => "argb4444",
+            BLPPixelFormat.pixel_rgb565 => "rgb565",
+            BLPPixelFormat.pixel_a8 => "a8",
+            BLPPixelFormat.pixel_dxt5 => "dxt5",
+            BLPPixelFormat.pixel_unspecified => "unspecified",
+            BLPPixelFormat.pixel_argb2565 => "argb2565",
+            BLPPixelFormat.pixel_bc5 => "bc5", // DXGI_FORMAT_BC5_UNOdxt1RM
+            else => "invalid...",
+        }});
+    }
 };
 
 const MipmapLevelAndFlag = enum(u8) {
     mips_none = 0x0,
     mips_generated = 0x1,
-    mips_handmade = 0x2, // not supported
+    mips_handmade = 0x2,
 
     // You can also define mask constants
     pub const flags_mipmap_mask = 0xF; // level
     pub const flags_unk_0x10 = 0x10;
+
+    pub fn format(
+        self: MipmapLevelAndFlag,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        try writer.print("{s}", .{switch (self) {
+            MipmapLevelAndFlag.mips_none => "none",
+            MipmapLevelAndFlag.mips_generated => "generated",
+            MipmapLevelAndFlag.mips_handmade => "handmade",
+        }});
+    }
 };
 
 const ExtendedData = union(enum) {
@@ -96,14 +136,6 @@ pub const Header = extern struct {
 
     pub fn isValid(self: Header) bool {
         return std.mem.eql(u8, &self.magic, "BLP2");
-    }
-
-    pub fn hasUserData(self: Header) bool {
-        return self.magic[3] == '\x1B';
-    }
-
-    pub fn sectorSize(self: Header) u32 {
-        return @as(u32, 512) << @intCast(self.sector_size_shift);
     }
 
     pub fn init(reader: anytype) !Header {
@@ -137,5 +169,8 @@ pub const Header = extern struct {
         try writer.print("  Magic: {s} (Valid: {})\n", .{ self.magic, self.isValid() });
         try writer.print("  Format Version: {}\n", .{self.format_version});
         try writer.print("  Color Encoding: {}\n", .{self.color_encoding});
+        try writer.print("  Pixel Format: {}\n", .{self.preferred_format});
+        try writer.print("  Mips: {}\n", .{self.has_mips});
+        try writer.print("  Size: {d}x{d}\n", .{ self.width, self.height });
     }
 };
