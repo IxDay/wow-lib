@@ -5,7 +5,9 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Dependencies build
-    const clap = b.dependency("clap", .{});
+    const dep_args = .{ .optimize = optimize, .target = target };
+    const clap = b.dependency("clap", dep_args);
+    const zigimg = b.dependency("zigimg", dep_args);
 
     const z_dep = b.dependency("z", .{});
     const z = b.addStaticLibrary(.{
@@ -58,6 +60,10 @@ pub fn build(b: *std.Build) void {
 
     bz2.linkLibC();
 
+    const utils = b.createModule(.{
+        .root_source_file = b.path("src/utils.zig"),
+    });
+
     const list_version = b.addExecutable(.{
         .name = "list_version",
         .root_source_file = b.path("list_version.zig"),
@@ -90,6 +96,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(blp);
 
     blp.root_module.addImport("clap", clap.module("clap"));
+    blp.root_module.addImport("zigimg", zigimg.module("zigimg"));
 
     // Run steps for each executable
 
@@ -128,8 +135,19 @@ pub fn build(b: *std.Build) void {
 
     utils_tests.addIncludePath(bz2_dep.path(""));
     utils_tests.linkLibrary(bz2);
+
+    const dxt1_tests = b.addTest(.{
+        .root_source_file = b.path("src/blp/dxt1.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    dxt1_tests.root_module.addImport("zigimg", zigimg.module("zigimg"));
+    dxt1_tests.root_module.addImport("utils", utils);
+
     // Run all tests
     const run_utils_tests = b.addRunArtifact(utils_tests);
+    const run_dxt1_tests = b.addRunArtifact(dxt1_tests);
 
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_utils_tests.step);
@@ -137,4 +155,7 @@ pub fn build(b: *std.Build) void {
     // Individual test steps
     const test_utils_step = b.step("test:utils", "Run utils tests");
     test_utils_step.dependOn(&run_utils_tests.step);
+
+    const test_dxt1_step = b.step("test:dxt1", "Run dxt1 tests");
+    test_dxt1_step.dependOn(&run_dxt1_tests.step);
 }
