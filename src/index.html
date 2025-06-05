@@ -3,29 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Three.js GLB Viewer (r177)</title>
+    <title>Three.js GLB Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { margin: 0; overflow: hidden; }
         canvas { display: block; }
-        #upload-container {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            z-index: 100;
-            background: rgba(255,255,255,0.8);
-            padding: 10px;
-            border-radius: 5px;
-        }
-        #animation-controls {
-            position: absolute;
-            bottom: 10px;
-            left: 10px;
-            z-index: 100;
-            background: rgba(255,255,255,0.8);
-            padding: 10px;
-            border-radius: 5px;
-            display: none;
-        }
     </style>
 
     <script type="importmap">
@@ -38,16 +20,40 @@
     }
     </script>
 </head>
-<body>
-    <div id="upload-container">
-        <input type="file" id="file-input" accept=".glb,.gltf">
-        <p>Upload a GLB/GLTF file</p>
+<body class="font-sans">
+    <!-- Top Controls - File Upload -->
+    <div class="absolute top-4 left-4 z-50 bg-white/10 backdrop-blur-sm rounded-lg p-3 shadow-sm border border-white/20">
+        <label class="flex flex-col items-center justify-center gap-2 cursor-pointer">
+            <div class="flex items-center gap-2 text-sm text-white">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span>Upload GLB/GLTF</span>
+            </div>
+            <input type="file" id="file-input" accept=".glb,.gltf" class="hidden">
+        </label>
     </div>
 
-    <div id="animation-controls">
-        <button id="play-btn">Play</button>
-        <button id="stop-btn">Stop</button>
-        <span id="animation-info">No animation loaded</span>
+    <!-- Bottom Controls - Animation -->
+    <div id="animation-controls" class="absolute bottom-4 left-4 z-50 bg-white/10 backdrop-blur-sm rounded-lg p-3 shadow-sm border border-white/20 hidden">
+        <div class="flex items-center gap-2">
+            <button id="play-btn" class="px-3 py-1.5 text-sm rounded-md bg-white/10 hover:bg-white/20 text-white flex items-center gap-1 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                Play
+            </button>
+            <button id="stop-btn" class="px-3 py-1.5 text-sm rounded-md bg-white/10 hover:bg-white/20 text-white flex items-center gap-1 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="6" y="4" width="4" height="16"></rect>
+                    <rect x="14" y="4" width="4" height="16"></rect>
+                </svg>
+                Stop
+            </button>
+            <span id="animation-info" class="text-sm text-white/80 px-2">No animation loaded</span>
+        </div>
     </div>
 
     <script type="module">
@@ -57,7 +63,7 @@
 
         // Scene setup
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0xeeeeee);
+        scene.background = new THREE.Color(0x111113);
 
         // Camera
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -102,25 +108,16 @@
             while(scene.children.length > 0) {
                 const object = scene.children[0];
 
-                // Dispose of geometries and materials
                 if (object.isMesh) {
-                    if (object.geometry) {
-                        object.geometry.dispose();
-                    }
+                    if (object.geometry) object.geometry.dispose();
                     if (object.material) {
                         if (Array.isArray(object.material)) {
-                            object.material.forEach(material => material.dispose());
+                            object.material.forEach(m => m.dispose());
                         } else {
                             object.material.dispose();
                         }
                     }
                 }
-
-                // Dispose of textures
-                if (object.material && object.material.map) {
-                    object.material.map.dispose();
-                }
-
                 scene.remove(object);
             }
 
@@ -133,59 +130,50 @@
 
             animations = [];
             currentAction = null;
-            animationControls.style.display = 'none';
+            animationControls.classList.add('hidden');
             animationInfo.textContent = 'No animation loaded';
 
-            // Re-add lights and helpers
+            // Re-add lights
             scene.add(ambientLight);
             scene.add(directionalLight);
         }
 
         // File input handler
-        const fileInput = document.getElementById('file-input');
-        fileInput.addEventListener('change', function(event) {
+        document.getElementById('file-input').addEventListener('change', function(event) {
             const file = event.target.files[0];
             if (!file) return;
 
             const reader = new FileReader();
             reader.onload = function(e) {
-                // Reset the scene before loading new model
                 resetScene();
 
                 const loader = new GLTFLoader();
-
                 loader.parse(e.target.result, '', function(gltf) {
-                    // Add model to scene
                     const model = gltf.scene;
                     scene.add(model);
 
-                    // Set up animations if they exist
-                    if (gltf.animations && gltf.animations.length > 0) {
+                    // Set up animations
+                    if (gltf.animations?.length > 0) {
                         mixer = new THREE.AnimationMixer(model);
                         animations = gltf.animations;
-
-                        // Play the first animation by default
                         currentAction = mixer.clipAction(animations[0]);
                         currentAction.play();
 
-                        // Update UI
-                        animationControls.style.display = 'block';
+                        animationControls.classList.remove('hidden');
                         animationInfo.textContent = `Playing: ${animations[0].name}`;
                     } else {
                         animationInfo.textContent = 'No animations found';
                     }
 
-                    // Center the model
+                    // Center and zoom to model
                     const box = new THREE.Box3().setFromObject(model);
                     const center = box.getCenter(new THREE.Vector3());
                     model.position.sub(center);
 
-                    // Auto-zoom to fit model
                     const size = box.getSize(new THREE.Vector3());
                     const maxDim = Math.max(size.x, size.y, size.z);
                     const fov = camera.fov * (Math.PI / 180);
-                    let cameraZ = Math.abs(maxDim / 2 * Math.tan(fov * 2));
-                    camera.position.z = cameraZ * 1.5;
+                    camera.position.z = Math.abs(maxDim / 2 * Math.tan(fov * 2)) * 1.5;
                     controls.update();
 
                 }, undefined, function(error) {
@@ -197,14 +185,14 @@
         });
 
         // Animation controls
-        playBtn.addEventListener('click', function() {
+        playBtn.addEventListener('click', () => {
             if (currentAction) {
                 currentAction.play();
                 animationInfo.textContent = `Playing: ${currentAction.getClip().name}`;
             }
         });
 
-        stopBtn.addEventListener('click', function() {
+        stopBtn.addEventListener('click', () => {
             if (currentAction) {
                 currentAction.stop();
                 animationInfo.textContent = `Stopped: ${currentAction.getClip().name}`;
@@ -212,7 +200,7 @@
         });
 
         // Handle window resize
-        window.addEventListener('resize', function() {
+        window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -221,14 +209,7 @@
         // Animation loop
         function animate() {
             requestAnimationFrame(animate);
-
-            const delta = clock.getDelta();
-
-            // Update animation mixer if it exists
-            if (mixer) {
-                mixer.update(delta);
-            }
-
+            if (mixer) mixer.update(clock.getDelta());
             controls.update();
             renderer.render(scene, camera);
         }
