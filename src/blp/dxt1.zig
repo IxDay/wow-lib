@@ -5,43 +5,34 @@ const zigimg = @import("zigimg");
 const Rgba = zigimg.color.Rgba32;
 
 pub const Rgb565 = packed struct {
-    r: u5,
-    g: u6,
-    b: u5,
+    encoding: u16,
 
-    // Convert RGB888 to RGB565
     pub fn init(r: u8, g: u8, b: u8) Rgb565 {
+        const r5 = r >> 3; // Truncate 8-bit red to 5-bit (keep upper 5 bits)
+        const g6 = g >> 2; // Truncate 8-bit green to 6-bit (keep upper 6 bits)
+        const b5 = b >> 3; // Truncate 8-bit blue to 5-bit (keep upper 5 bits)
+
         return Rgb565{
-            .r = @truncate(r >> 3), // 8-bit to 5-bit: keep top 5 bits
-            .g = @truncate(g >> 2), // 8-bit to 6-bit: keep top 6 bits
-            .b = @truncate(b >> 3), // 8-bit to 5-bit: keep top 5 bits
+            .encoding = (@as(u16, r5) << 11) | (@as(u16, g6) << 5) | @as(u16, b5),
         };
     }
 
     // Convert RGB565 back to RGB888
     pub fn toRgba(self: Rgb565) Rgba {
-        return Rgba.initRgba(
-            (@as(u8, self.r) << 3) | (@as(u8, self.r) >> 2), // Scale 5-bit to 8-bit
-            (@as(u8, self.g) << 2) | (@as(u8, self.g) >> 4), // Scale 6-bit to 8-bit
-            (@as(u8, self.b) << 3) | (@as(u8, self.b) >> 2), // Scale 5-bit to 8-bit
-            255,
-        );
+        const r: u8 = @truncate((self.encoding >> 11) & 0x1F);
+        const g: u8 = @truncate((self.encoding >> 5) & 0x3F);
+        const b: u8 = @truncate(self.encoding & 0x1F);
+        return Rgba{
+            .r = (r << 3) | (r >> 2),
+            .g = (g << 2) | (g >> 4),
+            .b = (b << 3) | (b >> 2),
+            .a = 0xff,
+        };
     }
 
     pub fn compare(self: Rgb565, other: Rgb565) i2 {
-        // Compare r first
-        if (self.r < other.r) return -1;
-        if (self.r > other.r) return 1;
-
-        // r values are equal, compare g
-        if (self.g < other.g) return -1;
-        if (self.g > other.g) return 1;
-
-        // r and g values are equal, compare b
-        if (self.b < other.b) return -1;
-        if (self.b > other.b) return 1;
-
-        // All values are equal
+        if (self.encoding > other.encoding) return 1;
+        if (self.encoding < other.encoding) return -1;
         return 0;
     }
 };
