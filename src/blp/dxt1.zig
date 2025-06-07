@@ -121,44 +121,52 @@ pub fn decompress(read_seeker: anytype, image: *zigimg.Image) !void {
     }
 }
 
-test "decompress" {
+test "DXT1 decompress" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var buffer = utils.BufferReader.init(&[_]u8{
-        // Block 1 (top-left 4x4)
-        0xFF, 0x07, // color0 (red in RGB565)
-        0x00, 0x00, // color1 (black in RGB565)
-        0x00, 0x00, 0x00, 0x00, // indices (all use color0)
+    const red = Rgba.initRgb(255, 0, 0);
+    const green = Rgba.initRgb(0, 255, 0);
+    const blue = Rgba.initRgb(0, 0, 255);
+    const black = Rgba.initRgb(0, 0, 0);
+    const expected = [64]Rgba{
+        red,  red,  red,  red,  green, green, green, green,
+        red,  red,  red,  red,  green, green, green, green,
+        red,  red,  red,  red,  green, green, green, green,
+        red,  red,  red,  red,  green, green, green, green,
+        blue, blue, blue, blue, black, black, black, black,
+        blue, blue, blue, blue, black, black, black, black,
+        blue, blue, blue, blue, black, black, black, black,
+        blue, blue, blue, blue, black, black, black, black,
+    };
 
-        // Block 2 (top-right 4x4)
-        0x00, 0xF8, // color0 (blue in RGB565)
-        0xFF, 0xFF, // color1 (white in RGB565)
-        0xFF, 0xFF, 0xFF, 0xFF, // indices (all use color1)
-
-        // Block 3 (bottom-left 4x4)
-        0xE0, 0x07, // color0 (green in RGB565)
-        0x00, 0x00, // color1 (black in RGB565)
-        0x55, 0x55, 0x55, 0x55, // indices (checkerboard pattern)
-
-        // Block 4 (bottom-right 4x4)
-        0xFF, 0xFF, // color0 (white in RGB565)
-        0x00, 0x00, // color1 (black in RGB565)
-        0xAA, 0xAA, 0xAA, 0xAA, // indices (inverted checkerboard)
-    });
     var image = try zigimg.Image.create(allocator, 8, 8, .rgba32);
     defer image.deinit();
+
+    var buffer = utils.BufferReader.init(&[_]u8{
+        // Block 1 (top-left) RED
+        0x00, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Block 2 (top-right) GREEN
+        0xe0, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Block 3 (bottom-left) BLUE
+        0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Block 4 (bottom-right) BLACK
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    });
 
     try decompress(&buffer, &image);
 
     // Print first few pixels for verification
-    std.debug.print("Decompressed 8x8 DXT1 texture:\n", .{});
-    for (0..4) |y| {
+    for (0..8) |y| {
         for (0..8) |x| {
             const pixel = image.pixels.rgba32[y * 8 + x];
-            std.debug.print("({}) ", .{pixel});
+            // std.debug.print(
+            //     "\x1b[38;2;{};{};{}m█\x1b[0m",
+            //     .{ pixel.r, pixel.g, pixel.b },
+            // );
+            try std.testing.expectEqualDeep(expected[y * 8 + x], pixel);
         }
-        std.debug.print("\n", .{});
+        // std.debug.print("\n", .{});
     }
 }
