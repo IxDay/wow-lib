@@ -125,11 +125,17 @@ pub fn build(b: *std.Build) void {
     run_blp_step.dependOn(&run_blp.step);
 
     // Unit tests for each component
+    const test_step = b.step("test", "Run all tests");
+    const test_filter = b.option([]const u8, "test-filter", "Filter for test");
+
     const utils_tests = b.addTest(.{
-        .root_source_file = b.path("src/utils.zig"),
+        .filter = test_filter,
         .target = target,
-        .optimize = optimize,
+        .optimize = .Debug,
+        .root_source_file = b.path("./src/utils.zig"),
     });
+    test_step.dependOn(&b.addRunArtifact(utils_tests).step);
+
     utils_tests.addIncludePath(z_dep.path(""));
     utils_tests.linkLibrary(z);
 
@@ -137,25 +143,30 @@ pub fn build(b: *std.Build) void {
     utils_tests.linkLibrary(bz2);
 
     const dxt1_tests = b.addTest(.{
-        .root_source_file = b.path("src/blp/dxt1.zig"),
+        .filter = test_filter,
         .target = target,
-        .optimize = optimize,
+        .optimize = .Debug,
+        .root_source_file = b.path("./src/blp/dxt1.zig"),
     });
+    test_step.dependOn(&b.addRunArtifact(dxt1_tests).step);
 
     dxt1_tests.root_module.addImport("zigimg", zigimg.module("zigimg"));
     dxt1_tests.root_module.addImport("utils", utils);
 
-    // Run all tests
-    const run_utils_tests = b.addRunArtifact(utils_tests);
-    const run_dxt1_tests = b.addRunArtifact(dxt1_tests);
+    const mpq_tests = b.addTest(.{
+        .filter = test_filter,
+        .target = target,
+        .optimize = .Debug,
+        .root_source_file = b.path("./src/mpq/mpq.zig"),
+    });
+    test_step.dependOn(&b.addRunArtifact(mpq_tests).step);
+    mpq_tests.root_module.addImport("utils", utils);
 
-    const test_step = b.step("test", "Run all unit tests");
-    test_step.dependOn(&run_utils_tests.step);
-
-    // Individual test steps
-    const test_utils_step = b.step("test:utils", "Run utils tests");
-    test_utils_step.dependOn(&run_utils_tests.step);
-
-    const test_dxt1_step = b.step("test:dxt1", "Run dxt1 tests");
-    test_dxt1_step.dependOn(&run_dxt1_tests.step);
+    const mpq_hash_tests = b.addTest(.{
+        .filter = test_filter,
+        .target = target,
+        .optimize = .Debug,
+        .root_source_file = b.path("./src/mpq/hash.zig"),
+    });
+    test_step.dependOn(&b.addRunArtifact(mpq_hash_tests).step);
 }
