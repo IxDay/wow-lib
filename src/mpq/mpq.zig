@@ -1,5 +1,5 @@
 const std = @import("std");
-const utils = @import("./utils.zig");
+const utils = @import("utils");
 const hash = @import("./hash.zig");
 
 /// Error types for MPQ operations

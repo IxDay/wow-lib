@@ -1,6 +1,6 @@
 const std = @import("std");
 const clap = @import("clap");
-const mpq = @import("mpq.zig");
+const mpq = @import("./mpq.zig");
 const builtin = @import("builtin");
 
 pub fn main() !void {
