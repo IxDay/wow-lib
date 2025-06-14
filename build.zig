@@ -98,6 +98,17 @@ pub fn build(b: *std.Build) void {
     blp.root_module.addImport("clap", clap.module("clap"));
     blp.root_module.addImport("zigimg", zigimg.module("zigimg"));
 
+    const gltf = b.addExecutable(.{
+        .name = "gltf",
+        .root_source_file = b.path("src/gltf/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const install_gltf = b.addInstallArtifact(gltf, .{});
+    b.getInstallStep().dependOn(&install_gltf.step);
+
+    gltf.root_module.addImport("clap", clap.module("clap"));
+    gltf.root_module.addImport("utils", utils);
     // Run steps for each executable
 
     const run_list_version = b.addRunArtifact(list_version);
@@ -123,6 +134,16 @@ pub fn build(b: *std.Build) void {
     }
     const run_blp_step = b.step("run:blp", "Run the blp application");
     run_blp_step.dependOn(&run_blp.step);
+
+    const run_gltf = b.addRunArtifact(gltf);
+    run_blp.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_gltf.addArgs(args);
+    }
+    const run_gltf_step = b.step("run:gltf", "Run the gltf application");
+    run_gltf_step.dependOn(&run_gltf.step);
+    const build_gltf_step = b.step("gltf", "Build the gltf executable");
+    build_gltf_step.dependOn(&install_gltf.step);
 
     // Unit tests for each component
     const test_step = b.step("test", "Run all tests");
@@ -169,4 +190,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("./src/mpq/hash.zig"),
     });
     test_step.dependOn(&b.addRunArtifact(mpq_hash_tests).step);
+
+    const gltf_tests = b.addTest(.{
+        .filter = test_filter,
+        .target = target,
+        .optimize = .Debug,
+        .root_source_file = b.path("./src/glTF/glTF.zig"),
+    });
+    test_step.dependOn(&b.addRunArtifact(gltf_tests).step);
 }
