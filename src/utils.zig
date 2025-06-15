@@ -131,180 +131,193 @@ pub const BufferReader = struct {
     }
 };
 
-pub fn debug(val: anytype) void {
-    debugIndent(2, val);
-}
+fn debugger(comptime T: type) type {
+    return struct {
+        value: T,
+        indent: u8,
 
-pub fn debugPrefix(prefix: []const u8, val: anytype) void {
-    std.debug.print("{s} - ", .{prefix});
-    debugIndent(2, val);
-}
+        const Self = @This();
+        const ValueType = T;
 
-fn debugIndent(indent: u8, val: anytype) void {
-    if (builtin.mode != .Debug) return;
-    const val_type = @TypeOf(val);
-    switch (@typeInfo(val_type)) {
-        .pointer => |ptr| {
-            debugPointer(indent, ptr, val, val_type);
-        },
-        .@"struct" => {
-            // std.debug.print("struct: {any}", .{val});
-            debugStruct(indent, val, val_type);
-        },
-        .array => {
-            std.debug.print("array: {any}\n", .{val});
-        },
-        .optional => {
-            if (val) |v| {
-                debugIndent(indent, v);
-            } else {
-                std.debug.print("null\n", .{});
-            }
-        },
-        .@"union" => |uni| {
-            std.debug.print("union {}", .{uni});
-        },
-        .@"enum" => |enm| {
-            std.debug.print("enum {}", .{enm});
-        },
-        .int => |int| {
-            std.debug.print("int {d}", .{int});
-        },
-        else => {
-            // Fall back to standard {any} formatter
-            std.debug.print("undef {any}", .{val});
-        },
-    }
-}
-
-fn debugStruct(indent: u8, val: anytype, val_type: type) void {
-    std.debug.print("{}{{\n", .{val_type});
-    inline for (std.meta.fields(val_type)) |field| {
-        for (0..indent) |_| {
-            std.debug.print(" ", .{});
+        pub fn init(value: anytype, indent: u8) Self {
+            return .{
+                .value = value,
+                .indent = indent,
+            };
         }
-        std.debug.print("{s}: ", .{field.name});
-        debugIndent(indent + 2, @field(val, field.name));
-    }
-    for (0..indent - 2) |_| {
-        std.debug.print(" ", .{});
-    }
-    std.debug.print("}}\n", .{});
+
+        pub fn print(self: Self) void {
+            switch (@typeInfo(ValueType)) {
+                .@"struct" => self.printStruct(),
+                .int => std.debug.print("{d}\n", .{self.value}),
+                .pointer => |ptr| self.printPointer(ptr),
+                .array => std.debug.print("array: {}\n", .{self.value}),
+                .@"union" => |uni| std.debug.print("union {}", .{uni}),
+                .@"enum" => |enm| std.debug.print("enum {}", .{enm}),
+                .optional => {
+                    if (self.value) |v| {
+                        debug(v, self.indent);
+                    } else {
+                        std.debug.print("null\n", .{});
+                    }
+                },
+                else => std.debug.print("undef {any}\n", .{self.value}),
+            }
+        }
+
+        fn printStruct(self: Self) void {
+            if (comptime (@typeInfo(ValueType) != .@"struct")) {
+                @compileError("printStruct only available for struct");
+            }
+            std.debug.print("{}{{\n", .{ValueType});
+            inline for (std.meta.fields(ValueType)) |field| {
+                for (0..self.indent) |_| {
+                    std.debug.print(" ", .{});
+                }
+                std.debug.print("{s}: ", .{field.name});
+                debug(@field(self.value, field.name), self.indent + 2);
+            }
+            for (0..self.indent - 2) |_| {
+                std.debug.print(" ", .{});
+            }
+            std.debug.print("}}\n", .{});
+        }
+
+        fn printPointer(self: Self, ptr: std.builtin.Type.Pointer) void {
+            // for (0..indent) |_| {
+            //     std.debug.print(" ", .{});
+            // }
+            switch (ptr.size) {
+                .one => {
+                    std.debug.print("one: {}", .{ptr});
+                    // [Option-less] Do not show opaque or function pointers
+                    // if (ptr.child == anyopaque or
+                    //     @typeInfo(ptr.child) == .@"fn")
+                    //     return;
+
+                    // [Option] Follow the pointer
+                    // if (opt.ptr_deref) {
+                    //     if (s.pointers.find(val)) {
+                    //         try s.appendValSpecial(.recursion, c);
+                    //     } else if (s.pointers.push(val)) {
+                    //         try s.traverse(val.*, val_info, c);
+                    //         s.pointers.pop();
+                    //     } else { // pointers stack is full
+                    //         try s.appendValSpecial(.skip, c);
+                    //     }
+                    // } else {
+                    //     try s.appendValFmt("{*}", val, c);
+                    // }
+                },
+                .c => {
+                    // Can't follow C pointers
+                    // try s.appendValSpecial(.unknown, c);
+                },
+                .many => {
+                    std.debug.print("many: {}", .{ptr});
+                    // [Option] Interpret [*:0]u8 as string
+                    // if (opt.ptr_many_u8z_is_str and
+                    //     ptr.child == u8 and meta.sentinel(val_T) == 0)
+                    // {
+                    //     const len = std.mem.indexOfSentinel(u8, 0, val);
+                    //     try s.appendValString(val[0..len :0], c);
+                    //     return;
+                    // }
+
+                    // [Option] Interpret [*:sentinel]T as array
+                    // if (opt.ptr_many_with_sentinel_is_array) {
+                    //     if (meta.sentinel(val_T)) |sentinel| {
+                    //         var i: usize = 0;
+                    //         while (val[i] != sentinel) : (i += 1) {
+                    //             const len = i + 1;
+                    //             // [Option] Stop if the length of a slice exceeds
+                    //             if (opt.array_max_len > 0 and len > opt.array_max_len)
+                    //                 break;
+
+                    //             c.index = i;
+                    //             // s.last_child = if (len == val.len) true else false;
+                    //             try s.traverse(val[i], val_info, c);
+                    //         }
+                    //         return;
+                    //     }
+                    // }
+
+                    // Can't follow the pointer
+                    // try s.appendValSpecial(.unknown, c);
+                },
+                .slice => {
+                    // [Option] Interpret []u8 as string
+                    if (std.meta.Child(ValueType) == u8 and std.meta.sentinel(ValueType) == null) {
+                        std.debug.print("{s}\n", .{self.value});
+                        return;
+                    }
+
+                    // // [Option] Interpret [:0]u8 as string
+                    // if (opt.slice_u8z_is_str and
+                    //     meta.Child(val_T) == u8 and meta.sentinel(val_T) == 0)
+                    // {
+                    //     try s.appendValString(val, c);
+                    //     return;
+                    // }
+
+                    // // Slice is empty
+                    // if (val.len == 0) {
+                    //     try s.appendValSpecial(.empty, c);
+                    //     return;
+                    // }
+
+                    // // Slice has multiple elements:
+                    // try s.appendSpecial(.paren_open, c);
+
+                    // // Comptime slice
+                    // if (isComptime(val)) {
+                    //     inline for (val, 0..) |item, i| {
+                    //         const len = i + 1;
+                    //         // [Option] Stop if the length of a slice exceeds
+                    //         if (opt.array_max_len > 0 and len > opt.array_max_len)
+                    //             break;
+
+                    //         c.index = i;
+                    //         // s.last_child = if (len == val.len) true else false;
+                    //         try s.traverse(item, val_info, c);
+                    //     }
+                    // }
+                    // // Runtime slice
+                    // else {
+                    //     for (val, 0..) |item, i| {
+                    //         const len = i + 1;
+                    //         // [Option] Stop if the length of a slice exceeds
+                    //         if (opt.array_max_len > 0 and len > opt.array_max_len)
+                    //             break;
+
+                    //         c.index = i;
+                    //         // s.last_child = if (len == val.len) true else false;
+                    //         try s.traverse(item, val_info, c);
+                    //     }
+                    // }
+                    // try s.appendSpecial(.paren_closed, c);
+                },
+            }
+        }
+    };
 }
 
-fn debugPointer(_: u8, ptr: std.builtin.Type.Pointer, val: anytype, val_type: type) void {
-    // for (0..indent) |_| {
-    //     std.debug.print(" ", .{});
-    // }
-    switch (ptr.size) {
-        .one => {
-            std.debug.print("one: {}", .{ptr});
-            // [Option-less] Do not show opaque or function pointers
-            // if (ptr.child == anyopaque or
-            //     @typeInfo(ptr.child) == .@"fn")
-            //     return;
+pub fn debug(value: anytype, indent: u8) void {
+    if (builtin.mode != .Debug) return;
+    debugger(@TypeOf(value)).init(value, indent).print();
+}
 
-            // [Option] Follow the pointer
-            // if (opt.ptr_deref) {
-            //     if (s.pointers.find(val)) {
-            //         try s.appendValSpecial(.recursion, c);
-            //     } else if (s.pointers.push(val)) {
-            //         try s.traverse(val.*, val_info, c);
-            //         s.pointers.pop();
-            //     } else { // pointers stack is full
-            //         try s.appendValSpecial(.skip, c);
-            //     }
-            // } else {
-            //     try s.appendValFmt("{*}", val, c);
-            // }
-        },
-        .c => {
-            // Can't follow C pointers
-            // try s.appendValSpecial(.unknown, c);
-        },
-        .many => {
-            std.debug.print("many: {}", .{ptr});
-            // [Option] Interpret [*:0]u8 as string
-            // if (opt.ptr_many_u8z_is_str and
-            //     ptr.child == u8 and meta.sentinel(val_T) == 0)
-            // {
-            //     const len = std.mem.indexOfSentinel(u8, 0, val);
-            //     try s.appendValString(val[0..len :0], c);
-            //     return;
-            // }
+pub fn debugPrefix(value: anytype, prefix: []const u8) void {
+    if (builtin.mode != .Debug) return;
+    std.debug.print("{s} - ", .{prefix});
+    debug(value, 2);
+}
 
-            // [Option] Interpret [*:sentinel]T as array
-            // if (opt.ptr_many_with_sentinel_is_array) {
-            //     if (meta.sentinel(val_T)) |sentinel| {
-            //         var i: usize = 0;
-            //         while (val[i] != sentinel) : (i += 1) {
-            //             const len = i + 1;
-            //             // [Option] Stop if the length of a slice exceeds
-            //             if (opt.array_max_len > 0 and len > opt.array_max_len)
-            //                 break;
-
-            //             c.index = i;
-            //             // s.last_child = if (len == val.len) true else false;
-            //             try s.traverse(val[i], val_info, c);
-            //         }
-            //         return;
-            //     }
-            // }
-
-            // Can't follow the pointer
-            // try s.appendValSpecial(.unknown, c);
-        },
-        .slice => {
-            // [Option] Interpret []u8 as string
-            if (std.meta.Child(val_type) == u8 and std.meta.sentinel(val_type) == null) {
-                std.debug.print("{s}\n", .{val});
-                return;
-            }
-
-            // // [Option] Interpret [:0]u8 as string
-            // if (opt.slice_u8z_is_str and
-            //     meta.Child(val_T) == u8 and meta.sentinel(val_T) == 0)
-            // {
-            //     try s.appendValString(val, c);
-            //     return;
-            // }
-
-            // // Slice is empty
-            // if (val.len == 0) {
-            //     try s.appendValSpecial(.empty, c);
-            //     return;
-            // }
-
-            // // Slice has multiple elements:
-            // try s.appendSpecial(.paren_open, c);
-
-            // // Comptime slice
-            // if (isComptime(val)) {
-            //     inline for (val, 0..) |item, i| {
-            //         const len = i + 1;
-            //         // [Option] Stop if the length of a slice exceeds
-            //         if (opt.array_max_len > 0 and len > opt.array_max_len)
-            //             break;
-
-            //         c.index = i;
-            //         // s.last_child = if (len == val.len) true else false;
-            //         try s.traverse(item, val_info, c);
-            //     }
-            // }
-            // // Runtime slice
-            // else {
-            //     for (val, 0..) |item, i| {
-            //         const len = i + 1;
-            //         // [Option] Stop if the length of a slice exceeds
-            //         if (opt.array_max_len > 0 and len > opt.array_max_len)
-            //             break;
-
-            //         c.index = i;
-            //         // s.last_child = if (len == val.len) true else false;
-            //         try s.traverse(item, val_info, c);
-            //     }
-            // }
-            // try s.appendSpecial(.paren_closed, c);
-        },
-    }
+test "debugger" {
+    const bar = struct {
+        int: u8,
+        str: []const u8,
+    };
+    const b = bar{ .int = 2, .str = "bar" };
+    debug(b, 2);
 }
