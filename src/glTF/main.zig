@@ -45,6 +45,7 @@ pub fn main() !void {
     };
     defer file.close();
     const header = try gltf.Header.init(file);
+    utils.debugPrefix(header, "glb header");
     var gltf_json = try header.parseJSON(file, allocator);
     defer gltf_json.deinit(allocator);
     utils.debugPrefix(gltf_json, "returned gltf");

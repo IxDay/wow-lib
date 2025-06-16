@@ -220,6 +220,11 @@ pub const Node = struct {
 pub const Scene = struct {
     nodes: ?[]u32 = null,
     name: ?[]const u8 = null,
+
+    pub fn deinit(self: Scene, allocator: std.mem.Allocator) void {
+        if (self.nodes) |nodes| allocator.free(nodes);
+        if (self.name) |name| allocator.free(name);
+    }
 };
 
 // Animation
@@ -256,8 +261,8 @@ pub const Skin = struct {
 // Main glTF structure
 pub const Gltf = struct {
     asset: Asset,
-    // scene: ?u32 = null,
-    // scenes: ?[]Scene = null,
+    scene: ?u32 = null,
+    scenes: ?[]Scene = null,
     // nodes: ?[]Node = null,
     // meshes: ?[]Mesh = null,
     // materials: ?[]Material = null,
@@ -275,12 +280,10 @@ pub const Gltf = struct {
     pub fn deinit(self: *Self, allocator: Allocator) void {
         self.asset.deinit(allocator);
 
-        // if (self.scenes) |scenes| {
-        //     for (scenes) |scene| {
-        //         if (scene.nodes) |nodes| allocator.free(nodes);
-        //     }
-        //     allocator.free(scenes);
-        // }
+        if (self.scenes) |scenes| {
+            for (scenes) |scene| scene.deinit(allocator);
+            allocator.free(scenes);
+        }
 
         // if (self.nodes) |nodes| {
         //     for (nodes) |node| {
@@ -352,18 +355,18 @@ pub const Gltf = struct {
         const asset_obj = root.get("asset") orelse return error.MissingAsset;
         const asset = try parseAsset(asset_obj.object, allocator);
 
-        const gltf = Self{
+        var gltf = Self{
             .asset = asset,
         };
 
-        // // Parse optional fields
-        // if (root.get("scene")) |scene_val| {
-        //     gltf.scene = @intCast(scene_val.integer);
-        // }
+        // Parse optional fields
+        if (root.get("scene")) |scene_val| {
+            gltf.scene = @intCast(scene_val.integer);
+        }
 
-        // if (root.get("scenes")) |scenes_val| {
-        //     gltf.scenes = try parseScenes(allocator, scenes_val.array);
-        // }
+        if (root.get("scenes")) |scenes_val| {
+            gltf.scenes = try parseScenes(allocator, scenes_val.array);
+        }
 
         // if (root.get("nodes")) |nodes_val| {
         //     gltf.nodes = try parseNodes(allocator, nodes_val.array);
@@ -431,7 +434,7 @@ fn parseScenes(allocator: Allocator, arr: json.Array) ![]Scene {
     for (arr.items, 0..) |item, i| {
         const obj = item.object;
         scenes[i] = Scene{
-            .name = if (obj.get("name")) |n| n.string else null,
+            .name = if (obj.get("name")) |n| try allocator.dupe(u8, n.string) else null,
             .nodes = if (obj.get("nodes")) |nodes_val| try parseU32Array(allocator, nodes_val.array) else null,
         };
     }
@@ -446,7 +449,7 @@ fn parseNodes(allocator: Allocator, arr: json.Array) ![]Node {
         const obj = item.object;
 
         nodes[i] = Node{
-            .name = if (obj.get("name")) |n| n.string else null,
+            .name = if (obj.get("name")) |n| try allocator.dupe(u8, n.string) else null,
             .mesh = if (obj.get("mesh")) |m| @intCast(m.integer) else null,
             .children = if (obj.get("children")) |c| try parseU32Array(allocator, c.array) else null,
         };
