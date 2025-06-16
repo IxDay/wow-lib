@@ -151,7 +151,7 @@ fn debugger(comptime T: type) type {
                 .@"struct" => self.printStruct(),
                 .int => std.debug.print("{d}\n", .{self.value}),
                 .pointer => |ptr| self.printPointer(ptr),
-                .array => std.debug.print("array: {}\n", .{self.value}),
+                .array => self.printArray(),
                 .@"union" => |uni| std.debug.print("union {}", .{uni}),
                 .@"enum" => |enm| std.debug.print("enum {}", .{enm}),
                 .optional => {
@@ -164,6 +164,16 @@ fn debugger(comptime T: type) type {
                 else => std.debug.print("undef {any}\n", .{self.value}),
             }
         }
+        fn printArray(self: Self) void {
+            if (comptime (@typeInfo(ValueType) != .array)) {
+                @compileError("printStruct only available for struct");
+            }
+            if (std.meta.Child(ValueType) == u8) {
+                std.debug.print("{s}\n", .{self.value});
+            } else {
+                std.debug.print("array: {{{any}}}", .{self.value});
+            }
+        }
 
         fn printStruct(self: Self) void {
             if (comptime (@typeInfo(ValueType) != .@"struct")) {
@@ -171,15 +181,11 @@ fn debugger(comptime T: type) type {
             }
             std.debug.print("{}{{\n", .{ValueType});
             inline for (std.meta.fields(ValueType)) |field| {
-                for (0..self.indent) |_| {
-                    std.debug.print(" ", .{});
-                }
+                printIndent(self.indent);
                 std.debug.print("{s}: ", .{field.name});
                 debug(@field(self.value, field.name), self.indent + 2);
             }
-            for (0..self.indent - 2) |_| {
-                std.debug.print(" ", .{});
-            }
+            printIndent(self.indent - 2);
             std.debug.print("}}\n", .{});
         }
 
@@ -245,59 +251,69 @@ fn debugger(comptime T: type) type {
                     // Can't follow the pointer
                     // try s.appendValSpecial(.unknown, c);
                 },
-                .slice => {
-                    // [Option] Interpret []u8 as string
-                    if (std.meta.Child(ValueType) == u8 and std.meta.sentinel(ValueType) == null) {
-                        std.debug.print("{s}\n", .{self.value});
-                        return;
-                    }
-
-                    // // [Option] Interpret [:0]u8 as string
-                    // if (opt.slice_u8z_is_str and
-                    //     meta.Child(val_T) == u8 and meta.sentinel(val_T) == 0)
-                    // {
-                    //     try s.appendValString(val, c);
-                    //     return;
-                    // }
-
-                    // // Slice is empty
-                    // if (val.len == 0) {
-                    //     try s.appendValSpecial(.empty, c);
-                    //     return;
-                    // }
-
-                    // // Slice has multiple elements:
-                    // try s.appendSpecial(.paren_open, c);
-
-                    // // Comptime slice
-                    // if (isComptime(val)) {
-                    //     inline for (val, 0..) |item, i| {
-                    //         const len = i + 1;
-                    //         // [Option] Stop if the length of a slice exceeds
-                    //         if (opt.array_max_len > 0 and len > opt.array_max_len)
-                    //             break;
-
-                    //         c.index = i;
-                    //         // s.last_child = if (len == val.len) true else false;
-                    //         try s.traverse(item, val_info, c);
-                    //     }
-                    // }
-                    // // Runtime slice
-                    // else {
-                    //     for (val, 0..) |item, i| {
-                    //         const len = i + 1;
-                    //         // [Option] Stop if the length of a slice exceeds
-                    //         if (opt.array_max_len > 0 and len > opt.array_max_len)
-                    //             break;
-
-                    //         c.index = i;
-                    //         // s.last_child = if (len == val.len) true else false;
-                    //         try s.traverse(item, val_info, c);
-                    //     }
-                    // }
-                    // try s.appendSpecial(.paren_closed, c);
-                },
+                .slice => self.printSlice(),
             }
+        }
+
+        fn printSlice(self: Self) void {
+            // [Option] Interpret []u8 as string
+            if (std.meta.Child(ValueType) == u8 and std.meta.sentinel(ValueType) == null) {
+                std.debug.print("{s}\n", .{self.value});
+                return;
+            }
+
+            // // [Option] Interpret [:0]u8 as string
+            // if (opt.slice_u8z_is_str and
+            //     meta.Child(val_T) == u8 and meta.sentinel(val_T) == 0)
+            // {
+            //     try s.appendValString(val, c);
+            //     return;
+            // }
+
+            // Slice is empty
+            if (self.value.len == 0) {
+                std.debug.print("[]\n", .{});
+                return;
+            }
+
+            // Slice has multiple elements:
+            std.debug.print("[\n", .{});
+
+            // Comptime slice
+            if (std.meta.fields(@TypeOf(.{self.value}))[0].is_comptime) {
+                inline for (self.value) |item| {
+                    // const len = i + 1;
+                    // [Option] Stop if the length of a slice exceeds
+                    // if (opt.array_max_len > 0 and len > opt.array_max_len)
+                    //     break;
+
+                    // c.index = i;
+                    // s.last_child = if (len == val.len) true else false;
+
+                    // try s.traverse(item, val_info, c);
+                    printIndent(self.indent);
+                    debug(item, self.indent + 2);
+                }
+            } else {
+                for (self.value) |item| {
+                    // const len = i + 1;
+                    // // [Option] Stop if the length of a slice exceeds
+                    // if (opt.array_max_len > 0 and len > opt.array_max_len)
+                    //     break;
+
+                    // c.index = i;
+                    // // s.last_child = if (len == val.len) true else false;
+                    // try s.traverse(item, val_info, c);
+                    printIndent(self.indent);
+                    debug(item, self.indent + 2);
+                }
+            }
+            printIndent(self.indent - 2);
+            std.debug.print("]\n", .{});
+        }
+
+        fn printIndent(indent: u8) void {
+            for (0..indent) |_| std.debug.print(" ", .{});
         }
     };
 }
