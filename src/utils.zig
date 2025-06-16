@@ -161,7 +161,8 @@ fn debugger(comptime T: type) type {
                         std.debug.print("null\n", .{});
                     }
                 },
-                else => std.debug.print("undef {any}\n", .{self.value}),
+                // consciously covered: .Type, .Float, .Void
+                else => std.debug.print("{any}\n", .{self.value}),
             }
         }
         fn printArray(self: Self) void {
@@ -171,7 +172,7 @@ fn debugger(comptime T: type) type {
             if (std.meta.Child(ValueType) == u8) {
                 std.debug.print("{s}\n", .{self.value});
             } else {
-                std.debug.print("array: {{{any}}}", .{self.value});
+                self.printSlice();
             }
         }
 
