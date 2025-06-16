@@ -20,6 +20,15 @@
             "args": ["/Users/max/Documents/Games/Wow/Epoch/Data/common.MPQ"],
             "preLaunchTask": "build:debug",
             "cwd": "${workspaceFolder}"
-        }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "glTF",
+            "program": "${workspaceFolder}/zig-out/bin/gltf",
+            "args": ["/Users/max/Documents/Dev/wow/go/test.glb"],
+            "preLaunchTask": "build:gltf",
+            "cwd": "${workspaceFolder}"
+        },
     ]
 }
