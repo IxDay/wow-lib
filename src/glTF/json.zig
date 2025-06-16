@@ -193,6 +193,17 @@ pub const Primitive = struct {
     material: ?u32 = null,
     mode: PrimitiveMode = .triangles,
     targets: ?[]std.StringHashMap(u32) = null,
+
+    pub fn deinit(self: Primitive, allocator: std.mem.Allocator) void {
+        @constCast(&self.attributes).deinit();
+        if (self.targets) |targets| {
+            for (targets) |target| {
+                var iterator = target.iterator();
+                while (iterator.next()) |entry| allocator.free(entry.key_ptr.*);
+                @constCast(&target).deinit();
+            }
+        }
+    }
 };
 
 // Mesh
@@ -200,6 +211,13 @@ pub const Mesh = struct {
     primitives: []Primitive,
     weights: ?[]f64 = null,
     name: ?[]const u8 = null,
+
+    pub fn deinit(self: Mesh, allocator: std.mem.Allocator) void {
+        for (self.primitives) |primitive| primitive.deinit(allocator);
+        allocator.free(self.primitives);
+
+        if (self.name) |name| allocator.free(name);
+    }
 };
 
 // Node
@@ -270,7 +288,7 @@ pub const Gltf = struct {
     scene: ?u32 = null,
     scenes: ?[]Scene = null,
     nodes: ?[]Node = null,
-    // meshes: ?[]Mesh = null,
+    meshes: ?[]Mesh = null,
     // materials: ?[]Material = null,
     // textures: ?[]Texture = null,
     // images: ?[]Image = null,
@@ -296,21 +314,23 @@ pub const Gltf = struct {
             allocator.free(nodes);
         }
 
-        // if (self.meshes) |meshes| {
-        //     for (meshes) |mesh| {
-        //         for (mesh.primitives) |primitive| {
-        //             @constCast(&primitive.attributes).deinit();
-        //             if (primitive.targets) |targets| {
-        //                 for (targets) |target| {
-        //                     @constCast(&target).deinit();
-        //                 }
-        //                 allocator.free(targets);
+        if (self.meshes) |meshes| {
+            for (meshes) |mesh| mesh.deinit(allocator);
+            allocator.free(meshes);
+        }
+        //     for (mesh.primitives) |primitive| {
+        //         @constCast(&primitive.attributes).deinit();
+        //         if (primitive.targets) |targets| {
+        //             for (targets) |target| {
+        //                 @constCast(&target).deinit();
         //             }
+        //             allocator.free(targets);
         //         }
-        //         allocator.free(mesh.primitives);
-        //         if (mesh.weights) |weights| allocator.free(weights);
         //     }
-        //     allocator.free(meshes);
+        //     allocator.free(mesh.primitives);
+        //     if (mesh.weights) |weights| allocator.free(weights);
+        // }
+        // allocator.free(meshes);
         // }
 
         // if (self.materials) |materials| allocator.free(materials);
@@ -375,9 +395,9 @@ pub const Gltf = struct {
             gltf.nodes = try parseNodes(allocator, nodes_val.array);
         }
 
-        // if (root.get("meshes")) |meshes_val| {
-        //     gltf.meshes = try parseMeshes(allocator, meshes_val.array);
-        // }
+        if (root.get("meshes")) |meshes_val| {
+            gltf.meshes = try parseMeshes(allocator, meshes_val.array);
+        }
 
         // if (root.get("materials")) |materials_val| {
         //     gltf.materials = try parseMaterials(allocator, materials_val.array);
@@ -514,7 +534,8 @@ fn parseMeshes(allocator: Allocator, arr: json.Array) ![]Mesh {
             if (prim_obj.get("attributes")) |attrs_val| {
                 var attrs_iter = attrs_val.object.iterator();
                 while (attrs_iter.next()) |entry| {
-                    try attributes.put(entry.key_ptr.*, @intCast(entry.value_ptr.integer));
+                    const key = try allocator.dupe(u8, entry.key_ptr.*);
+                    try attributes.put(key, @intCast(entry.value_ptr.integer));
                 }
             }
 
@@ -528,7 +549,7 @@ fn parseMeshes(allocator: Allocator, arr: json.Array) ![]Mesh {
 
         meshes[i] = Mesh{
             .primitives = primitives,
-            .name = if (obj.get("name")) |n| n.string else null,
+            .name = if (obj.get("name")) |n| try allocator.dupe(u8, n.string) else null,
         };
     }
 

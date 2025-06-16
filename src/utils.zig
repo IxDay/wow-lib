@@ -135,34 +135,49 @@ fn debugger(comptime T: type) type {
     return struct {
         value: T,
         indent: u8,
+        inline_mode: bool = false,
 
         const Self = @This();
         const ValueType = T;
 
-        pub fn init(value: anytype, indent: u8) Self {
+        pub fn init(value: anytype, indent: u8, inline_mode: bool) Self {
             return .{
                 .value = value,
                 .indent = indent,
+                .inline_mode = inline_mode,
             };
+        }
+
+        fn output(self: Self, comptime fmt: []const u8, args: anytype) void {
+            std.debug.print(fmt, args);
+            if (!self.inline_mode) std.debug.print("\n", .{});
+        }
+
+        fn debug(self: Self, value: anytype) void {
+            debugOpt(value, self.indent, self.inline_mode);
+        }
+
+        fn debugIndent(self: Self, value: anytype) void {
+            debugOpt(value, self.indent + 2, self.inline_mode);
         }
 
         pub fn print(self: Self) void {
             switch (@typeInfo(ValueType)) {
                 .@"struct" => self.printStruct(),
-                .int => std.debug.print("{d}\n", .{self.value}),
+                .int => self.output("{d}", .{self.value}),
                 .pointer => |ptr| self.printPointer(ptr),
                 .array => self.printArray(),
                 .@"union" => |uni| std.debug.print("union {}", .{uni}),
-                .@"enum" => |enm| std.debug.print("enum {}", .{enm}),
+                .@"enum" => |enm| self.printEnum(enm),
                 .optional => {
                     if (self.value) |v| {
-                        debug(v, self.indent);
+                        self.debug(v);
                     } else {
-                        std.debug.print("null\n", .{});
+                        self.output("null", .{});
                     }
                 },
                 // consciously covered: .Type, .Float, .Void
-                else => std.debug.print("{any}\n", .{self.value}),
+                else => self.output("{any}", .{self.value}),
             }
         }
         fn printArray(self: Self) void {
@@ -170,9 +185,22 @@ fn debugger(comptime T: type) type {
                 @compileError("printStruct only available for struct");
             }
             if (std.meta.Child(ValueType) == u8) {
-                std.debug.print("{s}\n", .{self.value});
+                self.output("{s}", .{self.value});
             } else {
                 self.printSlice();
+            }
+        }
+
+        fn printEnum(self: Self, enm: std.builtin.Type.Enum) void {
+            if (std.enums.tagName(ValueType, self.value)) |tag_name| {
+                self.output(".{s}", .{tag_name});
+                // try s.appendVal(enum_name, c);
+            } else {
+                // Non-exhaustive and unnamed enums: enum(int) {.., _}
+                self.output("{s}({d})", .{
+                    @typeName(enm.tag_type),
+                    @intFromEnum(self.value),
+                });
             }
         }
 
@@ -180,14 +208,30 @@ fn debugger(comptime T: type) type {
             if (comptime (@typeInfo(ValueType) != .@"struct")) {
                 @compileError("printStruct only available for struct");
             }
-            std.debug.print("{}{{\n", .{ValueType});
+            if (comptime isHashMap(ValueType)) {
+                return self.printHashMap();
+            }
+            self.output("{}{{", .{ValueType});
             inline for (std.meta.fields(ValueType)) |field| {
                 printIndent(self.indent);
                 std.debug.print("{s}: ", .{field.name});
-                debug(@field(self.value, field.name), self.indent + 2);
+                self.debugIndent(@field(self.value, field.name));
             }
             printIndent(self.indent - 2);
-            std.debug.print("}}\n", .{});
+            self.output("}}", .{});
+        }
+
+        fn printHashMap(self: Self) void {
+            var iterator = self.value.iterator();
+            self.output("{{", .{});
+            while (iterator.next()) |entry| {
+                printIndent(self.indent);
+                debugOpt(entry.key_ptr, self.indent + 2, true);
+                std.debug.print(" => ", .{});
+                self.debugIndent(entry.value_ptr);
+            }
+            printIndent(self.indent - 2);
+            self.output("}}", .{});
         }
 
         fn printPointer(self: Self, ptr: std.builtin.Type.Pointer) void {
@@ -195,27 +239,27 @@ fn debugger(comptime T: type) type {
             //     std.debug.print(" ", .{});
             // }
             switch (ptr.size) {
-                .one => {
-                    std.debug.print("one: {}", .{ptr});
-                    // [Option-less] Do not show opaque or function pointers
-                    // if (ptr.child == anyopaque or
-                    //     @typeInfo(ptr.child) == .@"fn")
-                    //     return;
+                .one => self.debug(self.value.*),
+                // std.debug.print("one: {}\n", .{ptr});
+                // [Option-less] Do not show opaque or function pointers
+                // if (ptr.child == anyopaque or
+                //     @typeInfo(ptr.child) == .@"fn")
+                //     return;
 
-                    // [Option] Follow the pointer
-                    // if (opt.ptr_deref) {
-                    //     if (s.pointers.find(val)) {
-                    //         try s.appendValSpecial(.recursion, c);
-                    //     } else if (s.pointers.push(val)) {
-                    //         try s.traverse(val.*, val_info, c);
-                    //         s.pointers.pop();
-                    //     } else { // pointers stack is full
-                    //         try s.appendValSpecial(.skip, c);
-                    //     }
-                    // } else {
-                    //     try s.appendValFmt("{*}", val, c);
-                    // }
-                },
+                // [Option] Follow the pointer
+                // if (opt.ptr_deref) {
+                //     if (s.pointers.find(val)) {
+                //         try s.appendValSpecial(.recursion, c);
+                //     } else if (s.pointers.push(val)) {
+                //         try s.traverse(val.*, val_info, c);
+                //         s.pointers.pop();
+                //     } else { // pointers stack is full
+                //         try s.appendValSpecial(.skip, c);
+                //     }
+                // } else {
+                //     try s.appendValFmt("{*}", val, c);
+                // }
+                // },
                 .c => {
                     // Can't follow C pointers
                     // try s.appendValSpecial(.unknown, c);
@@ -259,7 +303,7 @@ fn debugger(comptime T: type) type {
         fn printSlice(self: Self) void {
             // [Option] Interpret []u8 as string
             if (std.meta.Child(ValueType) == u8 and std.meta.sentinel(ValueType) == null) {
-                std.debug.print("{s}\n", .{self.value});
+                self.output("{s}", .{self.value});
                 return;
             }
 
@@ -273,12 +317,12 @@ fn debugger(comptime T: type) type {
 
             // Slice is empty
             if (self.value.len == 0) {
-                std.debug.print("[]\n", .{});
+                self.output("[]", .{});
                 return;
             }
 
             // Slice has multiple elements:
-            std.debug.print("[\n", .{});
+            self.output("[", .{});
 
             // Comptime slice
             if (std.meta.fields(@TypeOf(.{self.value}))[0].is_comptime) {
@@ -293,7 +337,7 @@ fn debugger(comptime T: type) type {
 
                     // try s.traverse(item, val_info, c);
                     printIndent(self.indent);
-                    debug(item, self.indent + 2);
+                    self.debugIndent(item);
                 }
             } else {
                 for (self.value) |item| {
@@ -306,11 +350,11 @@ fn debugger(comptime T: type) type {
                     // // s.last_child = if (len == val.len) true else false;
                     // try s.traverse(item, val_info, c);
                     printIndent(self.indent);
-                    debug(item, self.indent + 2);
+                    self.debugIndent(item);
                 }
             }
             printIndent(self.indent - 2);
-            std.debug.print("]\n", .{});
+            self.output("]", .{});
         }
 
         fn printIndent(indent: u8) void {
@@ -319,15 +363,26 @@ fn debugger(comptime T: type) type {
     };
 }
 
-pub fn debug(value: anytype, indent: u8) void {
+fn isHashMap(comptime T: type) bool {
+    return @hasDecl(T, "put") and
+        @hasDecl(T, "get") and
+        @hasDecl(T, "iterator") and
+        @hasDecl(T, "count");
+}
+
+pub fn debugOpt(value: anytype, indent: u8, inline_mode: bool) void {
     if (builtin.mode != .Debug) return;
-    debugger(@TypeOf(value)).init(value, indent).print();
+    debugger(@TypeOf(value)).init(value, indent, inline_mode).print();
+}
+
+pub fn debug(value: anytype) void {
+    debugOpt(value, 2, false);
 }
 
 pub fn debugPrefix(value: anytype, prefix: []const u8) void {
     if (builtin.mode != .Debug) return;
     std.debug.print("{s} - ", .{prefix});
-    debug(value, 2);
+    debug(value);
 }
 
 test "debugger" {
@@ -336,5 +391,5 @@ test "debugger" {
         str: []const u8,
     };
     const b = bar{ .int = 2, .str = "bar" };
-    debug(b, 2);
+    debug(b);
 }
