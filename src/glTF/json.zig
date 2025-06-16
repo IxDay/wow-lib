@@ -214,6 +214,12 @@ pub const Node = struct {
     translation: [3]f64 = [_]f64{ 0.0, 0.0, 0.0 },
     weights: ?[]f64 = null,
     name: ?[]const u8 = null,
+
+    pub fn deinit(self: Node, allocator: std.mem.Allocator) void {
+        if (self.children) |children| allocator.free(children);
+        if (self.weights) |weights| allocator.free(weights);
+        if (self.name) |name| allocator.free(name);
+    }
 };
 
 // Scene
@@ -263,7 +269,7 @@ pub const Gltf = struct {
     asset: Asset,
     scene: ?u32 = null,
     scenes: ?[]Scene = null,
-    // nodes: ?[]Node = null,
+    nodes: ?[]Node = null,
     // meshes: ?[]Mesh = null,
     // materials: ?[]Material = null,
     // textures: ?[]Texture = null,
@@ -285,13 +291,10 @@ pub const Gltf = struct {
             allocator.free(scenes);
         }
 
-        // if (self.nodes) |nodes| {
-        //     for (nodes) |node| {
-        //         if (node.children) |children| allocator.free(children);
-        //         if (node.weights) |weights| allocator.free(weights);
-        //     }
-        //     allocator.free(nodes);
-        // }
+        if (self.nodes) |nodes| {
+            for (nodes) |node| node.deinit(allocator);
+            allocator.free(nodes);
+        }
 
         // if (self.meshes) |meshes| {
         //     for (meshes) |mesh| {
@@ -368,9 +371,9 @@ pub const Gltf = struct {
             gltf.scenes = try parseScenes(allocator, scenes_val.array);
         }
 
-        // if (root.get("nodes")) |nodes_val| {
-        //     gltf.nodes = try parseNodes(allocator, nodes_val.array);
-        // }
+        if (root.get("nodes")) |nodes_val| {
+            gltf.nodes = try parseNodes(allocator, nodes_val.array);
+        }
 
         // if (root.get("meshes")) |meshes_val| {
         //     gltf.meshes = try parseMeshes(allocator, meshes_val.array);
