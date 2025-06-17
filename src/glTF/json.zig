@@ -195,14 +195,36 @@ pub const Primitive = struct {
     targets: ?[]std.StringHashMap(u32) = null,
 
     pub fn deinit(self: Primitive, allocator: std.mem.Allocator) void {
+        var attributes_iterator = self.attributes.iterator();
+        while (attributes_iterator.next()) |entry| allocator.free(entry.key_ptr.*);
+
         @constCast(&self.attributes).deinit();
         if (self.targets) |targets| {
             for (targets) |target| {
-                var iterator = target.iterator();
-                while (iterator.next()) |entry| allocator.free(entry.key_ptr.*);
+                var target_iterator = target.iterator();
+                while (target_iterator.next()) |entry| allocator.free(entry.key_ptr.*);
                 @constCast(&target).deinit();
             }
         }
+    }
+
+    pub fn init(allocator: std.mem.Allocator, object: json.ObjectMap) !Primitive {
+        // Parse attributes
+        var attributes = std.StringHashMap(u32).init(allocator);
+        if (object.get("attributes")) |attrs_val| {
+            var attrs_iter = attrs_val.object.iterator();
+            while (attrs_iter.next()) |entry| {
+                const key = try allocator.dupe(u8, entry.key_ptr.*);
+                try attributes.put(key, @intCast(entry.value_ptr.integer));
+            }
+        }
+
+        return Primitive{
+            .attributes = attributes,
+            .indices = if (object.get("indices")) |idx| @intCast(idx.integer) else null,
+            .material = if (object.get("material")) |mat| @intCast(mat.integer) else null,
+            .mode = if (object.get("mode")) |mode| @enumFromInt(mode.integer) else .triangles,
+        };
     }
 };
 
@@ -217,6 +239,19 @@ pub const Mesh = struct {
         allocator.free(self.primitives);
 
         if (self.name) |name| allocator.free(name);
+    }
+    pub fn init(allocator: std.mem.Allocator, object: json.ObjectMap) !Mesh {
+        const primitives_arr = object.get("primitives").?.array;
+
+        var primitives = try allocator.alloc(Primitive, primitives_arr.items.len);
+
+        for (primitives_arr.items, 0..) |prim_item, j| {
+            primitives[j] = try Primitive.init(allocator, prim_item.object);
+        }
+        return Mesh{
+            .primitives = primitives,
+            .name = if (object.get("name")) |n| try allocator.dupe(u8, n.string) else null,
+        };
     }
 };
 
@@ -318,20 +353,6 @@ pub const Gltf = struct {
             for (meshes) |mesh| mesh.deinit(allocator);
             allocator.free(meshes);
         }
-        //     for (mesh.primitives) |primitive| {
-        //         @constCast(&primitive.attributes).deinit();
-        //         if (primitive.targets) |targets| {
-        //             for (targets) |target| {
-        //                 @constCast(&target).deinit();
-        //             }
-        //             allocator.free(targets);
-        //         }
-        //     }
-        //     allocator.free(mesh.primitives);
-        //     if (mesh.weights) |weights| allocator.free(weights);
-        // }
-        // allocator.free(meshes);
-        // }
 
         // if (self.materials) |materials| allocator.free(materials);
         // if (self.textures) |textures| allocator.free(textures);
@@ -396,7 +417,12 @@ pub const Gltf = struct {
         }
 
         if (root.get("meshes")) |meshes_val| {
-            gltf.meshes = try parseMeshes(allocator, meshes_val.array);
+            gltf.meshes = try allocator.alloc(Mesh, meshes_val.array.items.len);
+            for (meshes_val.array.items, 0..) |item, i| {
+                gltf.meshes.?[i] = try Mesh.init(allocator, item.object);
+            }
+
+            //  = try parseMeshes(allocator, meshes_val.array);
         }
 
         // if (root.get("materials")) |materials_val| {
@@ -515,45 +541,6 @@ fn parseNodes(allocator: Allocator, arr: json.Array) ![]Node {
     }
 
     return nodes;
-}
-
-fn parseMeshes(allocator: Allocator, arr: json.Array) ![]Mesh {
-    var meshes = try allocator.alloc(Mesh, arr.items.len);
-
-    for (arr.items, 0..) |item, i| {
-        const obj = item.object;
-        const primitives_arr = obj.get("primitives").?.array;
-
-        var primitives = try allocator.alloc(Primitive, primitives_arr.items.len);
-
-        for (primitives_arr.items, 0..) |prim_item, j| {
-            const prim_obj = prim_item.object;
-
-            // Parse attributes
-            var attributes = std.StringHashMap(u32).init(allocator);
-            if (prim_obj.get("attributes")) |attrs_val| {
-                var attrs_iter = attrs_val.object.iterator();
-                while (attrs_iter.next()) |entry| {
-                    const key = try allocator.dupe(u8, entry.key_ptr.*);
-                    try attributes.put(key, @intCast(entry.value_ptr.integer));
-                }
-            }
-
-            primitives[j] = Primitive{
-                .attributes = attributes,
-                .indices = if (prim_obj.get("indices")) |idx| @intCast(idx.integer) else null,
-                .material = if (prim_obj.get("material")) |mat| @intCast(mat.integer) else null,
-                .mode = if (prim_obj.get("mode")) |mode| @enumFromInt(mode.integer) else .triangles,
-            };
-        }
-
-        meshes[i] = Mesh{
-            .primitives = primitives,
-            .name = if (obj.get("name")) |n| try allocator.dupe(u8, n.string) else null,
-        };
-    }
-
-    return meshes;
 }
 
 fn parseMaterials(allocator: Allocator, arr: json.Array) ![]Material {
