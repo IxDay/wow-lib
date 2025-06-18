@@ -24,14 +24,16 @@ pub const AccessorType = enum {
     mat4,
 
     pub fn fromString(str: []const u8) !AccessorType {
-        if (std.mem.eql(u8, str, "SCALAR")) return .scalar;
-        if (std.mem.eql(u8, str, "VEC2")) return .vec2;
-        if (std.mem.eql(u8, str, "VEC3")) return .vec3;
-        if (std.mem.eql(u8, str, "VEC4")) return .vec4;
-        if (std.mem.eql(u8, str, "MAT2")) return .mat2;
-        if (std.mem.eql(u8, str, "MAT3")) return .mat3;
-        if (std.mem.eql(u8, str, "MAT4")) return .mat4;
-        return error.InvalidAccessorType;
+        const string_to_type = std.StaticStringMap(AccessorType).initComptime(.{
+            .{ "SCALAR", .scalar },
+            .{ "VEC2", .vec2 },
+            .{ "VEC3", .vec3 },
+            .{ "VEC4", .vec4 },
+            .{ "MAT2", .mat2 },
+            .{ "MAT3", .mat3 },
+            .{ "MAT4", .mat4 },
+        });
+        return string_to_type.get(str) orelse error.InvalidAccessorType;
     }
 };
 
@@ -80,6 +82,14 @@ pub const Buffer = struct {
     uri: ?[]const u8 = null,
     name: ?[]const u8 = null,
 
+    pub fn init(allocator: Allocator, object: json.ObjectMap) !Buffer {
+        return Buffer{
+            .name = try parseString(allocator, object.get("name")),
+            .byte_length = try parseU32(object.get("byteLength")) orelse 0,
+            .uri = try parseString(allocator, object.get("uri")),
+        };
+    }
+
     pub fn deinit(self: Buffer, allocator: Allocator) void {
         if (self.name) |name| allocator.free(name);
         if (self.uri) |uri| allocator.free(uri);
@@ -94,6 +104,17 @@ pub const BufferView = struct {
     byte_stride: ?u32 = null,
     target: ?u32 = null,
     name: ?[]const u8 = null,
+
+    pub fn init(allocator: Allocator, object: json.ObjectMap) !BufferView {
+        return BufferView{
+            .name = try parseString(allocator, object.get("name")),
+            .buffer = try parseU32(object.get("buffer")) orelse 0,
+            .byte_offset = try parseU32(object.get("byteOffset")) orelse 0,
+            .byte_length = try parseU32(object.get("byteLength")) orelse 0,
+            .byte_stride = try parseU32(object.get("byteStride")),
+            .target = try parseU32(object.get("target")),
+        };
+    }
 
     pub fn deinit(self: BufferView, allocator: Allocator) void {
         if (self.name) |name| allocator.free(name);
@@ -130,8 +151,27 @@ pub const Accessor = struct {
         };
     };
 
+    pub fn init(allocator: Allocator, object: json.ObjectMap) !Accessor {
+        var accessor = Accessor{
+            .buffer_view = try parseU32(object.get("bufferView")),
+            .byte_offset = try parseU32(object.get("byteOffset")) orelse 0,
+            .component_type = @enumFromInt(object.get("componentType").?.integer),
+            .normalized = if (object.get("normalized")) |n| n.bool else false,
+            .count = try parseU32(object.get("count")) orelse 0,
+            .type = try AccessorType.fromString(object.get("type").?.string),
+        };
+        errdefer accessor.deinit(allocator);
+        accessor.name = try parseString(allocator, object.get("name"));
+        accessor.min = try parseF64Array(allocator, object.get("min"));
+        accessor.max = try parseF64Array(allocator, object.get("max"));
+
+        return accessor;
+    }
+
     pub fn deinit(self: Accessor, allocator: Allocator) void {
         if (self.name) |name| allocator.free(name);
+        if (self.max) |max| allocator.free(max);
+        if (self.min) |min| allocator.free(min);
     }
 };
 
@@ -261,9 +301,9 @@ pub const Material = struct {
         if (object.get("emissiveFactor")) |ef| {
             const ef_arr = ef.array;
             material.emissive_factor = [_]f64{
-                ef_arr.items[0].float,
-                ef_arr.items[1].float,
-                ef_arr.items[2].float,
+                try cast(ef_arr.items[0]),
+                try cast(ef_arr.items[1]),
+                try cast(ef_arr.items[2]),
             };
         }
 
@@ -414,12 +454,12 @@ pub const Scene = struct {
     nodes: ?[]u32 = null,
     name: ?[]const u8 = null,
 
-    pub fn deinit(self: Scene, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: Scene, allocator: Allocator) void {
         if (self.nodes) |nodes| allocator.free(nodes);
         if (self.name) |name| allocator.free(name);
     }
 
-    pub fn init(allocator: std.mem.Allocator, object: json.ObjectMap) !Scene {
+    pub fn init(allocator: Allocator, object: json.ObjectMap) !Scene {
         return Scene{
             .name = try parseString(allocator, object.get("name")),
             .nodes = try parseU32Array(allocator, object.get("nodes")),
@@ -451,11 +491,57 @@ pub const Animation = struct {
         input: u32,
         interpolation: []const u8 = "LINEAR",
         output: u32,
+
+        pub fn deinit(self: AnimationSampler, allocator: Allocator) void {
+            allocator.free(self.interpolation);
+        }
     };
 
     pub fn deinit(self: Animation, allocator: Allocator) void {
         for (self.channels) |channel| channel.deinit(allocator);
+        allocator.free(self.channels);
+
+        for (self.samplers) |sampler| sampler.deinit(allocator);
+        allocator.free(self.samplers);
+
         if (self.name) |name| allocator.free(name);
+    }
+
+    pub fn init(allocator: Allocator, object: json.ObjectMap) !Animation {
+        const channels_arr = object.get("channels").?.array;
+        var channels = try allocator.alloc(Animation.Channel, channels_arr.items.len);
+
+        for (channels_arr.items, 0..) |ch_item, j| {
+            const ch_obj = ch_item.object;
+            const target_obj = ch_obj.get("target").?.object;
+
+            channels[j] = Animation.Channel{
+                .sampler = try parseU32(ch_obj.get("sampler")) orelse 0,
+                .target = Animation.Channel.Target{
+                    .node = try parseU32(target_obj.get("node")),
+                    .path = try parseString(allocator, object.get("path")) orelse "",
+                },
+            };
+        }
+
+        const samplers_arr = object.get("samplers").?.array;
+        var samplers = try allocator.alloc(Animation.AnimationSampler, samplers_arr.items.len);
+
+        for (samplers_arr.items, 0..) |samp_item, j| {
+            const samp_obj = samp_item.object;
+            samplers[j] = Animation.AnimationSampler{
+                .input = try parseU32(samp_obj.get("input")) orelse 0,
+                .output = try parseU32(samp_obj.get("output")) orelse 0,
+                .interpolation = try parseString(allocator, object.get("interpolation")) orelse
+                    try std.fmt.allocPrint(allocator, "LINEAR", .{}),
+            };
+        }
+
+        return Animation{
+            .channels = channels,
+            .samplers = samplers,
+            .name = try parseString(allocator, object.get("name")),
+        };
     }
 };
 
@@ -468,6 +554,16 @@ pub const Skin = struct {
 
     pub fn deinit(self: Skin, allocator: Allocator) void {
         if (self.name) |name| allocator.free(name);
+        allocator.free(self.joints);
+    }
+
+    pub fn init(allocator: Allocator, object: json.ObjectMap) !Skin {
+        return Skin{
+            .name = try parseString(allocator, object.get("name")),
+            .inverse_bind_matrices = try parseU32(object.get("inverseBindMatrices")),
+            .skeleton = try parseU32(object.get("skeleton")),
+            .joints = try parseU32Array(allocator, object.get("joints")) orelse &[_]u32{},
+        };
     }
 };
 
@@ -551,6 +647,7 @@ pub const Gltf = struct {
                 }
                 const items = if (value) |v| v.array.items else return null;
                 const out = try this.allocator.alloc(T, items.len);
+                errdefer this.allocator.free(out);
 
                 for (items, 0..) |item, i| {
                     out[i] = try T.init(this.allocator, item.object);
@@ -558,6 +655,7 @@ pub const Gltf = struct {
                 return out;
             }
         }{ .allocator = allocator };
+        errdefer gltf.deinit(allocator);
 
         gltf.scenes = try alloc.call(Scene, root.get("scenes"));
         gltf.nodes = try alloc.call(Node, root.get("nodes"));
@@ -566,164 +664,23 @@ pub const Gltf = struct {
         gltf.textures = try alloc.call(Texture, root.get("textures"));
         gltf.images = try alloc.call(Image, root.get("images"));
         gltf.samplers = try alloc.call(Sampler, root.get("samplers"));
-
-        // if (root.get("accessors")) |accessors_val| {
-        //     gltf.accessors = try parseAccessors(allocator, accessors_val.array);
-        // }
-
-        // if (root.get("bufferViews")) |buffer_views_val| {
-        //     gltf.buffer_views = try parseBufferViews(allocator, buffer_views_val.array);
-        // }
-
-        // if (root.get("buffers")) |buffers_val| {
-        //     gltf.buffers = try parseBuffers(allocator, buffers_val.array);
-        // }
-
-        // if (root.get("animations")) |animations_val| {
-        //     gltf.animations = try parseAnimations(allocator, animations_val.array);
-        // }
-
-        // if (root.get("skins")) |skins_val| {
-        //     gltf.skins = try parseSkins(allocator, skins_val.array);
-        // }
+        gltf.accessors = try alloc.call(Accessor, root.get("accessors"));
+        gltf.buffer_views = try alloc.call(BufferView, root.get("bufferViews"));
+        gltf.buffers = try alloc.call(Buffer, root.get("buffers"));
+        gltf.animations = try alloc.call(Animation, root.get("animations"));
+        gltf.skins = try alloc.call(Skin, root.get("skins"));
 
         return gltf;
     }
 };
-
-// Helper parsing functions
-fn parseAccessors(allocator: Allocator, arr: json.Array) ![]Accessor {
-    var accessors = try allocator.alloc(Accessor, arr.items.len);
-
-    for (arr.items, 0..) |item, i| {
-        const obj = item.object;
-
-        const type_str = obj.get("type").?.string;
-        const accessor_type = try AccessorType.fromString(type_str);
-
-        accessors[i] = Accessor{
-            .name = if (obj.get("name")) |n| n.string else null,
-            .buffer_view = if (obj.get("bufferView")) |bv| @intCast(bv.integer) else null,
-            .byte_offset = if (obj.get("byteOffset")) |bo| @intCast(bo.integer) else 0,
-            .component_type = @enumFromInt(obj.get("componentType").?.integer),
-            .normalized = if (obj.get("normalized")) |n| n.bool else false,
-            .count = @intCast(obj.get("count").?.integer),
-            .type = accessor_type,
-            .min = try parseF64Array(allocator, obj.get("min")) orelse null,
-            .max = try parseF64Array(allocator, obj.get("max")) orelse null,
-        };
-    }
-
-    return accessors;
-}
-
-fn parseBufferViews(allocator: Allocator, arr: json.Array) ![]BufferView {
-    var buffer_views = try allocator.alloc(BufferView, arr.items.len);
-
-    for (arr.items, 0..) |item, i| {
-        const obj = item.object;
-        buffer_views[i] = BufferView{
-            .name = if (obj.get("name")) |n| n.string else null,
-            .buffer = @intCast(obj.get("buffer").?.integer),
-            .byte_offset = if (obj.get("byteOffset")) |bo| @intCast(bo.integer) else 0,
-            .byte_length = @intCast(obj.get("byteLength").?.integer),
-            .byte_stride = if (obj.get("byteStride")) |bs| @intCast(bs.integer) else null,
-            .target = if (obj.get("target")) |t| @intCast(t.integer) else null,
-        };
-    }
-
-    return buffer_views;
-}
-
-fn parseBuffers(allocator: Allocator, arr: json.Array) ![]Buffer {
-    var buffers = try allocator.alloc(Buffer, arr.items.len);
-
-    for (arr.items, 0..) |item, i| {
-        const obj = item.object;
-        buffers[i] = Buffer{
-            .name = if (obj.get("name")) |n| n.string else null,
-            .byte_length = @intCast(obj.get("byteLength").?.integer),
-            .uri = if (obj.get("uri")) |u| u.string else null,
-        };
-    }
-
-    return buffers;
-}
-
-fn parseAnimations(allocator: Allocator, arr: json.Array) ![]Animation {
-    var animations = try allocator.alloc(Animation, arr.items.len);
-
-    for (arr.items, 0..) |item, i| {
-        const obj = item.object;
-
-        const channels_arr = obj.get("channels").?.array;
-        var channels = try allocator.alloc(Animation.Channel, channels_arr.items.len);
-
-        for (channels_arr.items, 0..) |ch_item, j| {
-            const ch_obj = ch_item.object;
-            const target_obj = ch_obj.get("target").?.object;
-
-            channels[j] = Animation.Channel{
-                .sampler = @intCast(ch_obj.get("sampler").?.integer),
-                .target = Animation.Channel.Target{
-                    .node = if (target_obj.get("node")) |n| @intCast(n.integer) else null,
-                    .path = target_obj.get("path").?.string,
-                },
-            };
-        }
-
-        const samplers_arr = obj.get("samplers").?.array;
-        var samplers = try allocator.alloc(Animation.AnimationSampler, samplers_arr.items.len);
-
-        for (samplers_arr.items, 0..) |samp_item, j| {
-            const samp_obj = samp_item.object;
-            samplers[j] = Animation.AnimationSampler{
-                .input = @intCast(samp_obj.get("input").?.integer),
-                .output = @intCast(samp_obj.get("output").?.integer),
-                .interpolation = if (samp_obj.get("interpolation")) |interp| interp.string else "LINEAR",
-            };
-        }
-
-        animations[i] = Animation{
-            .channels = channels,
-            .samplers = samplers,
-            .name = if (obj.get("name")) |n| n.string else null,
-        };
-    }
-
-    return animations;
-}
-
-fn parseSkins(allocator: Allocator, arr: json.Array) ![]Skin {
-    var skins = try allocator.alloc(Skin, arr.items.len);
-
-    for (arr.items, 0..) |item, i| {
-        const obj = item.object;
-
-        skins[i] = Skin{
-            .name = if (obj.get("name")) |n| n.string else null,
-            .inverse_bind_matrices = if (obj.get("inverseBindMatrices")) |ibm| @intCast(ibm.integer) else null,
-            .skeleton = if (obj.get("skeleton")) |s| @intCast(s.integer) else null,
-            .joints = try parseU32Array(allocator, obj.get("joints").?.array),
-        };
-    }
-
-    return skins;
-}
 
 // Utility functions
 fn parseU32Array(allocator: Allocator, value: ?json.Value) !?[]u32 {
     return ArrayParser(u32).init(value).parse(allocator);
 }
 
-fn parseF64Array(allocator: Allocator, value: ?json.Object) !?[]f64 {
-    if (!value or value.array) return null;
-    const items = value.array.?.items;
-    var result = try allocator.alloc(f64, items.len);
-    for (items, 0..) |item, i| {
-        result[i] = item.float;
-    }
-    return result;
+fn parseF64Array(allocator: Allocator, value: ?json.Value) !?[]f64 {
+    return ArrayParser(f64).init(value).parse(allocator);
 }
 
 fn parseString(allocator: Allocator, value: ?std.json.Value) !?[]const u8 {
@@ -752,6 +709,7 @@ fn ArrayParser(comptime T: type) type {
                 },
                 .array => |array| {
                     const out = try allocator.alloc(T, array.items.len);
+                    errdefer allocator.free(out);
                     for (array.items, 0..) |item, i| out[i] = try parseItem(item);
                     return out;
                 },
@@ -768,6 +726,7 @@ fn ArrayParser(comptime T: type) type {
                 },
                 .float, .comptime_float => switch (item) {
                     .float => |f| @as(T, @floatCast(f)),
+                    .integer => |i| @as(T, @floatFromInt(i)),
                     else => Error.InvalidType,
                 },
                 else => Error.InvalidType,

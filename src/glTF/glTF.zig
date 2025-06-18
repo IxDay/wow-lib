@@ -38,7 +38,7 @@ pub const Header = extern struct {
         if (bytes_read < self.json_header.length) {
             return Error.ReadError;
         }
-        // std.debug.print("{s}", .{json_string});
+        errdefer std.debug.print("failed parsing {s}", .{json_string});
         return json.Gltf.parseFromString(allocator, json_string);
     }
 
